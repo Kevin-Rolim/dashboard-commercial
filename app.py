@@ -512,7 +512,7 @@ except Exception as erro:
 empresas_mapeadas = tabela_lista(base, "empresa_mapeada", "Empresa mapeada")
 eventos_mapeados = tabela_lista(base, "evento_mapeado_por_empresa", "Evento mapeado")
 empresas_eventos = base[["empresa_mapeada", "evento_mapeado_por_empresa", "ano_evento_mapeado"]].copy()
-empresas_eventos = empresas_eventos.applymap(limpar_texto)
+empresas_eventos = empresas_eventos.apply(lambda coluna: coluna.map(limpar_texto))
 empresas_eventos = empresas_eventos[(empresas_eventos["empresa_mapeada"] != "") | (empresas_eventos["evento_mapeado_por_empresa"] != "")]
 empresas_eventos = empresas_eventos.drop_duplicates().rename(columns=ROTULOS).reset_index(drop=True)
 
