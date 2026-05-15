@@ -1,559 +1,757 @@
-import streamlit as st
+from __future__ import annotations
+
+import io
+import os
+import unicodedata
+from datetime import datetime
+from typing import Iterable
+
+import numpy as np
 import pandas as pd
 import plotly.express as px
-import unicodedata
-import re
-from datetime import datetime
+import plotly.graph_objects as go
+import streamlit as st
 
+
+# =============================
+# Configuração geral
+# =============================
 st.set_page_config(
-    page_title="Dashboard Comercial",
+    page_title="Dashboard de Prospects",
     page_icon="📊",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-# -----------------------------
-# Funções auxiliares
-# -----------------------------
-
-def normalizar_texto(texto):
-    texto = str(texto).strip().lower()
-    texto = unicodedata.normalize("NFKD", texto)
-    texto = "".join([c for c in texto if not unicodedata.combining(c)])
-    texto = re.sub(r"\s+", " ", texto)
-    return texto
+DEFAULT_FILES = [
+    "dados.csv",
+    "prospects.csv",
+    "Lista de Prospects - Página12 (1).csv",
+    "Lista de Prospects - Pagina12 (1).csv",
+]
 
 
-def encontrar_coluna(df, opcoes):
-    colunas_normalizadas = {
-        normalizar_texto(col): col for col in df.columns
+# =============================
+# Estilo visual
+# =============================
+st.markdown(
+    """
+    <style>
+    .main .block-container {
+        padding-top: 1.4rem;
+        padding-bottom: 3rem;
+    }
+    .hero {
+        padding: 1.25rem 1.35rem;
+        border: 1px solid rgba(148, 163, 184, .22);
+        border-radius: 24px;
+        background: linear-gradient(135deg, rgba(15,23,42,.95), rgba(30,41,59,.88));
+        color: white;
+        margin-bottom: 1rem;
+        box-shadow: 0 18px 45px rgba(15,23,42,.12);
+    }
+    .hero h1 {
+        font-size: 2rem;
+        line-height: 1.12;
+        margin: 0 0 .35rem 0;
+        letter-spacing: -0.03em;
+    }
+    .hero p {
+        margin: 0;
+        color: rgba(226,232,240,.92);
+        font-size: .98rem;
+    }
+    .kpi-card {
+        border: 1px solid rgba(148, 163, 184, .22);
+        border-radius: 22px;
+        padding: 1rem 1rem .85rem 1rem;
+        background: rgba(255,255,255,.76);
+        box-shadow: 0 12px 28px rgba(15,23,42,.07);
+        min-height: 116px;
+    }
+    .kpi-label {
+        font-size: .78rem;
+        color: #64748b;
+        margin-bottom: .45rem;
+        text-transform: uppercase;
+        letter-spacing: .04em;
+        font-weight: 700;
+    }
+    .kpi-value {
+        font-size: 1.85rem;
+        font-weight: 850;
+        color: #0f172a;
+        line-height: 1;
+    }
+    .kpi-help {
+        font-size: .78rem;
+        color: #64748b;
+        margin-top: .5rem;
+    }
+    .section-title {
+        font-size: 1.18rem;
+        font-weight: 850;
+        color: #0f172a;
+        margin: .35rem 0 .2rem 0;
+    }
+    .section-subtitle {
+        color: #64748b;
+        font-size: .92rem;
+        margin-bottom: .7rem;
+    }
+    div[data-testid="stMetricValue"] {
+        font-weight: 850;
+    }
+    div[data-testid="stTabs"] button p {
+        font-weight: 700;
+    }
+    .small-note {
+        color: #64748b;
+        font-size: .85rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# =============================
+# Funções utilitárias
+# =============================
+def strip_accents(value: object) -> str:
+    text = "" if pd.isna(value) else str(value)
+    text = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in text if not unicodedata.combining(ch))
+
+
+def clean_text(value: object) -> str | None:
+    if pd.isna(value):
+        return None
+    text = str(value).replace("\u00a0", " ").strip()
+    text = " ".join(text.split())
+    if not text or text.lower() in {"nan", "none", "null"}:
+        return None
+    return text
+
+
+def clean_category(value: object, fallback: str = "Não informado") -> str:
+    text = clean_text(value)
+    if text is None:
+        return fallback
+    if text.upper() in {"#VALUE!", "#N/A", "#REF!", "#NAME?"}:
+        return fallback
+    return text
+
+
+def to_number(series: pd.Series) -> pd.Series:
+    cleaned = (
+        series.astype(str)
+        .str.replace("R$", "", regex=False)
+        .str.replace("%", "", regex=False)
+        .str.replace(".", "", regex=False)
+        .str.replace(",", ".", regex=False)
+        .str.strip()
+    )
+    return pd.to_numeric(cleaned, errors="coerce")
+
+
+def format_int(value: float | int | None) -> str:
+    if value is None or pd.isna(value):
+        return "0"
+    return f"{int(round(float(value))):,}".replace(",", ".")
+
+
+def format_pct(value: float | int | None) -> str:
+    if value is None or pd.isna(value):
+        return "0,0%"
+    return f"{float(value):.1%}".replace(".", ",")
+
+
+def normalize_key(value: object) -> str:
+    return strip_accents(value).lower().strip()
+
+
+def find_first_existing_file(files: Iterable[str]) -> str | None:
+    for file in files:
+        if os.path.exists(file):
+            return file
+    return None
+
+
+def read_csv_anywhere(file_bytes: bytes | None = None, file_path: str | None = None, url: str | None = None) -> pd.DataFrame:
+    encodings = ["utf-8-sig", "utf-8", "latin1", "cp1252"]
+    last_error = None
+
+    for encoding in encodings:
+        try:
+            if file_bytes is not None:
+                return pd.read_csv(io.BytesIO(file_bytes), header=None, sep=None, engine="python", encoding=encoding)
+            if file_path is not None:
+                return pd.read_csv(file_path, header=None, sep=None, engine="python", encoding=encoding)
+            if url:
+                return pd.read_csv(url, header=None, sep=None, engine="python", encoding=encoding)
+        except Exception as exc:  # pragma: no cover
+            last_error = exc
+
+    raise RuntimeError(f"Não consegui ler o CSV. Último erro: {last_error}")
+
+
+def locate_header(raw: pd.DataFrame) -> int:
+    target = "Empresas (Dedup)"
+    for idx, row in raw.iterrows():
+        values = [clean_text(v) for v in row.tolist()]
+        if target in values:
+            return int(idx)
+    raise ValueError("Não encontrei a linha de cabeçalho com 'Empresas (Dedup)'.")
+
+
+def get_one_number(data: pd.DataFrame, col_idx: int) -> int:
+    if col_idx >= data.shape[1]:
+        return 0
+    nums = to_number(data.iloc[:, col_idx]).dropna()
+    if nums.empty:
+        return 0
+    return int(nums.iloc[0])
+
+
+def get_list_table(data: pd.DataFrame, col_idx: int, name: str) -> pd.DataFrame:
+    if col_idx >= data.shape[1]:
+        return pd.DataFrame(columns=[name])
+    out = pd.DataFrame({name: data.iloc[:, col_idx].map(clean_text)})
+    out = out.dropna().drop_duplicates().reset_index(drop=True)
+    return out
+
+
+def get_count_table(data: pd.DataFrame, label_idx: int, count_idx: int, label: str, count: str = "qtd") -> pd.DataFrame:
+    if max(label_idx, count_idx) >= data.shape[1]:
+        return pd.DataFrame(columns=[label, count])
+    out = pd.DataFrame(
+        {
+            label: data.iloc[:, label_idx].map(lambda x: clean_category(x)),
+            count: to_number(data.iloc[:, count_idx]),
+        }
+    )
+    out = out.dropna(subset=[label])
+    out = out[out[label].astype(str).str.strip() != ""]
+    out[count] = out[count].fillna(0).astype(int)
+    out = out[out[label] != "Não informado"]
+    out = out.groupby(label, as_index=False)[count].sum()
+    out = out.sort_values(count, ascending=False).reset_index(drop=True)
+    return out
+
+
+def parse_send_dates(envios: pd.DataFrame, year: int) -> pd.DataFrame:
+    if envios.empty:
+        return envios
+    out = envios.copy()
+    raw = out["dia_envio"].astype(str).str.strip()
+    parsed = pd.to_datetime(raw + f"/{year}", format="%d/%m/%Y", errors="coerce")
+    fallback = pd.to_datetime(raw, errors="coerce", dayfirst=True)
+    out["data_envio"] = parsed.fillna(fallback)
+    out = out.dropna(subset=["data_envio"])
+    out = out.sort_values("data_envio")
+    out["acumulado"] = out["qtd_enviados"].cumsum()
+    out["variacao_abs"] = out["qtd_enviados"].diff().fillna(0).astype(int)
+    out["variacao_pct"] = out["qtd_enviados"].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0)
+    out["data_label"] = out["data_envio"].dt.strftime("%d/%m")
+    return out
+
+
+@st.cache_data(show_spinner=False)
+def parse_dashboard_data(file_bytes: bytes | None, file_path: str | None, url: str | None, selected_year: int) -> dict[str, pd.DataFrame | int | float]:
+    raw = read_csv_anywhere(file_bytes=file_bytes, file_path=file_path, url=url)
+    header_idx = locate_header(raw)
+    data = raw.iloc[header_idx + 1 :].reset_index(drop=True)
+
+    empresas = get_list_table(data, 0, "empresa")
+    eventos = get_list_table(data, 1, "evento")
+    anos = get_list_table(data, 2, "ano")
+    setores = get_count_table(data, 3, 4, "setor_dedup", "qtd")
+    setores_hard = get_count_table(data, 5, 6, "setor_hard", "qtd")
+    tipos_evento = get_count_table(data, 7, 8, "tipo_evento", "qtd")
+    nichos = get_count_table(data, 9, 10, "nicho", "qtd")
+    empresas_precisas = get_list_table(data, 11, "empresa")
+    empresas_encontradas = get_list_table(data, 13, "empresa")
+    cargos = get_list_table(data, 16, "cargo")
+    senioridades = get_count_table(data, 17, 18, "senioridade", "qtd")
+    departamentos = get_list_table(data, 19, "departamento")
+    departamentos["departamento"] = departamentos["departamento"].map(lambda x: clean_category(x, "Não informado"))
+    departamentos = departamentos[departamentos["departamento"] != "Não informado"].drop_duplicates().reset_index(drop=True)
+
+    envios = get_count_table(data, 20, 21, "dia_envio", "qtd_enviados")
+    envios = parse_send_dates(envios, selected_year)
+    respostas = get_count_table(data, 22, 23, "estado_resposta", "qtd")
+
+    total_empresas_precisas = max(get_one_number(data, 12), len(empresas_precisas))
+    total_empresas_encontradas = max(get_one_number(data, 14), len(empresas_encontradas))
+    total_contatos = max(get_one_number(data, 15), len(cargos))
+
+    needed_keys = set(empresas_precisas["empresa"].map(normalize_key))
+    found_keys = set(empresas_encontradas["empresa"].map(normalize_key))
+    missing_keys = needed_keys - found_keys
+    faltantes = empresas_precisas[empresas_precisas["empresa"].map(normalize_key).isin(missing_keys)].reset_index(drop=True)
+
+    respostas_total = int(respostas["qtd"].sum()) if not respostas.empty else 0
+    enviados_total = int(envios["qtd_enviados"].sum()) if not envios.empty else 0
+    resposta_sem_resposta = respostas[respostas["estado_resposta"].map(normalize_key).eq("sem resposta")]
+    sem_resposta = int(resposta_sem_resposta["qtd"].sum()) if not resposta_sem_resposta.empty else 0
+    respostas_com_status = max(respostas_total - sem_resposta, 0)
+
+    return {
+        "raw": raw,
+        "empresas": empresas,
+        "eventos": eventos,
+        "anos": anos,
+        "setores": setores,
+        "setores_hard": setores_hard,
+        "tipos_evento": tipos_evento,
+        "nichos": nichos,
+        "empresas_precisas": empresas_precisas,
+        "empresas_encontradas": empresas_encontradas,
+        "faltantes": faltantes,
+        "cargos": cargos,
+        "senioridades": senioridades,
+        "departamentos": departamentos,
+        "envios": envios,
+        "respostas": respostas,
+        "total_empresas_precisas": total_empresas_precisas,
+        "total_empresas_encontradas": total_empresas_encontradas,
+        "total_contatos": total_contatos,
+        "respostas_total": respostas_total,
+        "respostas_com_status": respostas_com_status,
+        "enviados_total": enviados_total,
     }
 
-    for opcao in opcoes:
-        opcao_norm = normalizar_texto(opcao)
-        if opcao_norm in colunas_normalizadas:
-            return colunas_normalizadas[opcao_norm]
 
-    for col_norm, col_original in colunas_normalizadas.items():
-        for opcao in opcoes:
-            if normalizar_texto(opcao) in col_norm:
-                return col_original
-
-    return None
-
-
-def converter_link_google_sheets(url):
-    if "docs.google.com/spreadsheets" not in url:
-        return url
-
-    match_id = re.search(r"/d/([a-zA-Z0-9-_]+)", url)
-    match_gid = re.search(r"gid=([0-9]+)", url)
-
-    if not match_id:
-        return url
-
-    sheet_id = match_id.group(1)
-    gid = match_gid.group(1) if match_gid else "0"
-
-    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+def kpi_card(label: str, value: str, help_text: str = "") -> None:
+    st.markdown(
+        f"""
+        <div class="kpi-card">
+            <div class="kpi-label">{label}</div>
+            <div class="kpi-value">{value}</div>
+            <div class="kpi-help">{help_text}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
-@st.cache_data(ttl=600)
-def carregar_csv_por_url(url):
-    url_csv = converter_link_google_sheets(url)
-    return pd.read_csv(url_csv)
+def section(title: str, subtitle: str = "") -> None:
+    st.markdown(f"<div class='section-title'>{title}</div>", unsafe_allow_html=True)
+    if subtitle:
+        st.markdown(f"<div class='section-subtitle'>{subtitle}</div>", unsafe_allow_html=True)
 
 
-def carregar_arquivo(arquivo):
-    nome = arquivo.name.lower()
-
-    if nome.endswith(".csv"):
-        return pd.read_csv(arquivo, sep=None, engine="python")
-
-    if nome.endswith(".xlsx") or nome.endswith(".xls"):
-        return pd.read_excel(arquivo)
-
-    return None
-
-
-def criar_base_exemplo():
-    dados = [
-        {
-            "Empresa": "Empresa Alpha",
-            "Nome": "Mariana Silva",
-            "Email": "mariana@alpha.com.br",
-            "Campanha": "Prospecção Maio",
-            "Segmento": "Tecnologia",
-            "Evento": "Evento A",
-            "Status": "Enviado",
-            "Data": "2026-05-01"
-        },
-        {
-            "Empresa": "Grupo Beta",
-            "Nome": "Carlos Souza",
-            "Email": "carlos@beta.com.br",
-            "Campanha": "Prospecção Maio",
-            "Segmento": "Logística",
-            "Evento": "Evento B",
-            "Status": "Abriu",
-            "Data": "2026-05-02"
-        },
-        {
-            "Empresa": "Delta Corp",
-            "Nome": "Fernanda Lima",
-            "Email": "fernanda@delta.com.br",
-            "Campanha": "Prospecção Maio",
-            "Segmento": "Varejo",
-            "Evento": "Evento A",
-            "Status": "Clicou",
-            "Data": "2026-05-03"
-        },
-        {
-            "Empresa": "Nova Hub",
-            "Nome": "Ricardo Alves",
-            "Email": "ricardo@novahub.com.br",
-            "Campanha": "Reativação",
-            "Segmento": "Serviços",
-            "Evento": "Evento C",
-            "Status": "Reunião marcada",
-            "Data": "2026-05-04"
-        },
-        {
-            "Empresa": "Prime Solutions",
-            "Nome": "Ana Martins",
-            "Email": "ana@prime.com.br",
-            "Campanha": "Reativação",
-            "Segmento": "Tecnologia",
-            "Evento": "Evento B",
-            "Status": "Sem resposta",
-            "Data": "2026-05-05"
-        },
-        {
-            "Empresa": "Rota Inteligente",
-            "Nome": "Paulo Mendes",
-            "Email": "paulo@rota.com.br",
-            "Campanha": "Transporte",
-            "Segmento": "Mobilidade",
-            "Evento": "Evento D",
-            "Status": "Recusado",
-            "Data": "2026-05-06"
-        }
-    ]
-
-    return pd.DataFrame(dados)
-
-
-def preparar_dataframe(df):
-    df = df.copy()
-    df.columns = [str(col).strip() for col in df.columns]
-
-    for col in df.columns:
-        if df[col].dtype == "object":
-            df[col] = df[col].astype(str).str.strip()
-
-    return df
-
-
-def aplicar_filtro_multiselect(df, coluna, valores):
-    if coluna and valores:
-        return df[df[coluna].astype(str).isin(valores)]
-    return df
-
-
-def contar_por_palavra(df, colunas, palavras):
+def bar_chart(df: pd.DataFrame, x: str, y: str, title: str, orientation: str = "v", height: int = 420, top_n: int | None = None) -> None:
     if df.empty:
-        return 0
+        st.info("Sem dados para exibir aqui.")
+        return
+    plot_df = df.copy()
+    if top_n:
+        plot_df = plot_df.head(top_n)
+    if orientation == "h":
+        plot_df = plot_df.sort_values(x, ascending=True)
+        fig = px.bar(plot_df, x=x, y=y, orientation="h", text=x, title=title)
+        fig.update_traces(textposition="outside", cliponaxis=False)
+    else:
+        fig = px.bar(plot_df, x=x, y=y, text=y, title=title)
+        fig.update_traces(textposition="outside", cliponaxis=False)
+    fig.update_layout(
+        height=height,
+        title_x=0,
+        margin=dict(l=10, r=20, t=55, b=20),
+        xaxis_title=None,
+        yaxis_title=None,
+        showlegend=False,
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
-    colunas_validas = [col for col in colunas if col and col in df.columns]
 
-    if not colunas_validas:
-        return 0
-
-    texto_linhas = df[colunas_validas].astype(str).agg(" ".join, axis=1)
-    texto_linhas = texto_linhas.apply(normalizar_texto)
-
-    padrao = "|".join([normalizar_texto(palavra) for palavra in palavras])
-    return texto_linhas.str.contains(padrao, regex=True, na=False).sum()
-
-
-def card_metrica(titulo, valor, ajuda=None):
-    st.metric(label=titulo, value=valor, help=ajuda)
+def donut_chart(df: pd.DataFrame, names: str, values: str, title: str, height: int = 390) -> None:
+    if df.empty:
+        st.info("Sem dados para exibir aqui.")
+        return
+    fig = px.pie(df, names=names, values=values, hole=.58, title=title)
+    fig.update_traces(textposition="inside", textinfo="percent+label")
+    fig.update_layout(height=height, title_x=0, margin=dict(l=10, r=10, t=55, b=20))
+    st.plotly_chart(fig, use_container_width=True)
 
 
-# -----------------------------
-# Cabeçalho
-# -----------------------------
+def searchable_table(df: pd.DataFrame, search_col: str, label: str, height: int = 390) -> None:
+    if df.empty:
+        st.info("Sem dados nessa tabela.")
+        return
+    term = st.text_input(label, placeholder="Digite para filtrar...")
+    view = df.copy()
+    if term:
+        view = view[view[search_col].astype(str).str.contains(term, case=False, na=False)]
+    st.dataframe(view, use_container_width=True, hide_index=True, height=height)
+    csv = view.to_csv(index=False).encode("utf-8-sig")
+    st.download_button(
+        "Baixar tabela filtrada em CSV",
+        data=csv,
+        file_name=f"{search_col}_filtrado.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
 
-st.title("📊 Dashboard Comercial Interativo")
-st.caption("Modelo inicial em Streamlit para acompanhar leads, campanhas, status, eventos e performance comercial.")
 
-# -----------------------------
+# =============================
 # Entrada de dados
-# -----------------------------
+# =============================
+st.sidebar.title("Base de dados")
+st.sidebar.caption("Use o CSV publicado no GitHub ou envie um arquivo manualmente.")
 
-with st.sidebar:
-    st.header("Base de dados")
+uploaded = st.sidebar.file_uploader("Enviar CSV", type=["csv"])
+selected_year = st.sidebar.number_input("Ano usado para interpretar dias de envio", min_value=2020, max_value=2035, value=datetime.today().year, step=1)
 
-    arquivo = st.file_uploader(
-        "Suba um CSV ou Excel",
-        type=["csv", "xlsx", "xls"]
+csv_url = ""
+try:
+    csv_url = st.secrets.get("CSV_URL", "")
+except Exception:
+    csv_url = ""
+
+local_file = find_first_existing_file(DEFAULT_FILES)
+
+file_bytes = uploaded.getvalue() if uploaded else None
+file_path = None if uploaded or csv_url else local_file
+url = csv_url if not uploaded and csv_url else None
+
+if not uploaded and not file_path and not url:
+    st.warning(
+        "Não encontrei um CSV no repositório. Envie o arquivo pela lateral ou coloque o arquivo como `dados.csv` na raiz do GitHub."
     )
-
-    url_planilha = st.text_input(
-        "Ou cole um link público do Google Sheets",
-        placeholder="https://docs.google.com/spreadsheets/..."
-    )
-
-    st.divider()
-
-    st.caption("Dica: para Google Sheets funcionar sem senha, a planilha precisa estar pública ou compartilhada para qualquer pessoa com o link.")
+    st.stop()
 
 try:
-    if arquivo is not None:
-        df_original = carregar_arquivo(arquivo)
-    elif url_planilha:
-        df_original = carregar_csv_por_url(url_planilha)
-    else:
-        df_original = criar_base_exemplo()
-
-    df_original = preparar_dataframe(df_original)
-
-except Exception as erro:
-    st.error("Não consegui carregar a base. Verifique o arquivo ou o link da planilha.")
-    st.exception(erro)
+    data = parse_dashboard_data(file_bytes, file_path, url, int(selected_year))
+except Exception as exc:
+    st.error(f"Não consegui montar o dashboard com esse arquivo. Erro: {exc}")
     st.stop()
 
-if df_original is None or df_original.empty:
-    st.warning("A base está vazia.")
-    st.stop()
+empresas = data["empresas"]
+eventos = data["eventos"]
+anos = data["anos"]
+setores = data["setores"]
+setores_hard = data["setores_hard"]
+tipos_evento = data["tipos_evento"]
+nichos = data["nichos"]
+empresas_precisas = data["empresas_precisas"]
+empresas_encontradas = data["empresas_encontradas"]
+faltantes = data["faltantes"]
+cargos = data["cargos"]
+senioridades = data["senioridades"]
+departamentos = data["departamentos"]
+envios = data["envios"]
+respostas = data["respostas"]
 
-# -----------------------------
-# Detecção automática de colunas
-# -----------------------------
-
-col_empresa = encontrar_coluna(df_original, ["Empresa", "Company", "Conta", "Cliente"])
-col_nome = encontrar_coluna(df_original, ["Nome", "Contato", "Pessoa", "Lead"])
-col_email = encontrar_coluna(df_original, ["Email", "E-mail", "Mail"])
-col_status = encontrar_coluna(df_original, ["Status", "Status de envio", "Status do envio", "Situação"])
-col_envio = encontrar_coluna(df_original, ["Envio", "Enviado", "Status Envio"])
-col_resposta = encontrar_coluna(df_original, ["Resposta", "Retorno", "Reply"])
-col_campanha = encontrar_coluna(df_original, ["Campanha", "Campaign"])
-col_segmento = encontrar_coluna(df_original, ["Segmento", "Setor", "Categoria", "Nicho"])
-col_evento = encontrar_coluna(df_original, ["Evento", "Event"])
-col_data = encontrar_coluna(df_original, ["Data", "Data envio", "Data de envio", "Created At", "Criado em"])
-
-colunas_status = [col_status, col_envio, col_resposta]
-
-df = df_original.copy()
-
-# -----------------------------
-# Filtros
-# -----------------------------
-
-with st.sidebar:
-    st.header("Filtros")
-
-    if col_campanha:
-        campanhas = sorted(df[col_campanha].dropna().astype(str).unique())
-        filtro_campanha = st.multiselect("Campanha", campanhas)
-        df = aplicar_filtro_multiselect(df, col_campanha, filtro_campanha)
-
-    if col_segmento:
-        segmentos = sorted(df[col_segmento].dropna().astype(str).unique())
-        filtro_segmento = st.multiselect("Segmento", segmentos)
-        df = aplicar_filtro_multiselect(df, col_segmento, filtro_segmento)
-
-    if col_evento:
-        eventos = sorted(df[col_evento].dropna().astype(str).unique())
-        filtro_evento = st.multiselect("Evento", eventos)
-        df = aplicar_filtro_multiselect(df, col_evento, filtro_evento)
-
-    if col_status:
-        status_opcoes = sorted(df[col_status].dropna().astype(str).unique())
-        filtro_status = st.multiselect("Status", status_opcoes)
-        df = aplicar_filtro_multiselect(df, col_status, filtro_status)
-
-    busca = st.text_input("Buscar empresa, contato ou e-mail")
-
-    if busca:
-        busca_norm = normalizar_texto(busca)
-        colunas_busca = [col for col in [col_empresa, col_nome, col_email] if col]
-        if colunas_busca:
-            texto_busca = df[colunas_busca].astype(str).agg(" ".join, axis=1)
-            texto_busca = texto_busca.apply(normalizar_texto)
-            df = df[texto_busca.str.contains(busca_norm, na=False)]
-
-# -----------------------------
-# Métricas principais
-# -----------------------------
-
-total_registros = len(df)
-
-total_empresas = df[col_empresa].nunique() if col_empresa else 0
-total_contatos = df[col_email].nunique() if col_email else (df[col_nome].nunique() if col_nome else total_registros)
-
-total_enviados = contar_por_palavra(
-    df,
-    colunas_status,
-    ["enviado", "enviada", "sent", "delivered"]
+# =============================
+# Header
+# =============================
+st.markdown(
+    """
+    <div class="hero">
+        <h1>Dashboard de Prospects, Eventos, Contatos e Envios</h1>
+        <p>Visão executiva para comparar empresas mapeadas, setores, eventos, cobertura de contatos, senioridades, cargos, envios e respostas.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
-total_abertos = contar_por_palavra(
-    df,
-    colunas_status,
-    ["abriu", "aberto", "abertura", "open", "opened"]
+# =============================
+# KPIs principais
+# =============================
+total_empresas = len(empresas)
+total_eventos = len(eventos)
+total_setores = len(setores)
+total_setores_hard = len(setores_hard)
+total_precisas = int(data["total_empresas_precisas"])
+total_encontradas = int(data["total_empresas_encontradas"])
+total_contatos = int(data["total_contatos"])
+total_enviados = int(data["enviados_total"])
+coverage = total_encontradas / total_precisas if total_precisas else 0
+respostas_total = int(data["respostas_total"])
+respostas_com_status = int(data["respostas_com_status"])
+taxa_status = respostas_com_status / total_enviados if total_enviados else 0
+
+k1, k2, k3, k4 = st.columns(4)
+with k1:
+    kpi_card("Empresas mapeadas", format_int(total_empresas), "Empresas únicas no bloco de prospects")
+with k2:
+    kpi_card("Eventos únicos", format_int(total_eventos), "Eventos deduplicados identificados")
+with k3:
+    kpi_card("Setores hard", format_int(total_setores_hard), f"{format_int(total_setores)} setores detalhados")
+with k4:
+    kpi_card("Cobertura de contatos", format_pct(coverage), f"{format_int(total_encontradas)} de {format_int(total_precisas)} empresas")
+
+k5, k6, k7, k8 = st.columns(4)
+with k5:
+    kpi_card("Contatos totais", format_int(total_contatos), "Total calculado no bloco de contatos")
+with k6:
+    kpi_card("Cargos únicos", format_int(len(cargos)), "Cargos diferentes encontrados")
+with k7:
+    kpi_card("Emails enviados", format_int(total_enviados), "Soma dos envios por dia")
+with k8:
+    kpi_card("Respostas com status", format_int(respostas_com_status), f"Taxa sobre envios: {format_pct(taxa_status)}")
+
+# =============================
+# Filtros gerais
+# =============================
+st.sidebar.divider()
+st.sidebar.title("Filtros visuais")
+
+selected_setores_hard = st.sidebar.multiselect(
+    "Setor hard",
+    options=setores_hard["setor_hard"].tolist(),
+    default=[],
+)
+selected_tipos = st.sidebar.multiselect(
+    "Tipo de evento",
+    options=tipos_evento["tipo_evento"].tolist(),
+    default=[],
+)
+selected_nichos = st.sidebar.multiselect(
+    "Nicho/segmento",
+    options=nichos["nicho"].tolist(),
+    default=[],
+)
+selected_status = st.sidebar.multiselect(
+    "Estado da resposta",
+    options=respostas["estado_resposta"].tolist(),
+    default=[],
 )
 
-total_cliques = contar_por_palavra(
-    df,
-    colunas_status,
-    ["clicou", "clique", "click", "clicked"]
+view_setores_hard = setores_hard if not selected_setores_hard else setores_hard[setores_hard["setor_hard"].isin(selected_setores_hard)]
+view_tipos = tipos_evento if not selected_tipos else tipos_evento[tipos_evento["tipo_evento"].isin(selected_tipos)]
+view_nichos = nichos if not selected_nichos else nichos[nichos["nicho"].isin(selected_nichos)]
+view_respostas = respostas if not selected_status else respostas[respostas["estado_resposta"].isin(selected_status)]
+
+# =============================
+# Abas
+# =============================
+tab_geral, tab_empresas, tab_eventos, tab_contatos, tab_envios, tab_explorar = st.tabs(
+    ["Visão geral", "Empresas", "Eventos", "Contatos", "Envios e respostas", "Explorar dados"]
 )
 
-total_respostas = contar_por_palavra(
-    df,
-    colunas_status,
-    ["respondeu", "resposta", "reply", "respondido"]
-)
-
-total_reunioes = contar_por_palavra(
-    df,
-    colunas_status,
-    ["reunião", "reuniao", "meeting", "agenda marcada", "reunião marcada"]
-)
-
-taxa_abertura = (total_abertos / total_enviados * 100) if total_enviados else 0
-taxa_clique = (total_cliques / total_enviados * 100) if total_enviados else 0
-taxa_resposta = (total_respostas / total_enviados * 100) if total_enviados else 0
-
-st.subheader("Resumo executivo")
-
-col1, col2, col3, col4, col5 = st.columns(5)
-
-with col1:
-    card_metrica("Registros", f"{total_registros:,}".replace(",", "."))
-
-with col2:
-    card_metrica("Empresas", f"{total_empresas:,}".replace(",", "."))
-
-with col3:
-    card_metrica("Contatos", f"{total_contatos:,}".replace(",", "."))
-
-with col4:
-    card_metrica("Enviados", f"{total_enviados:,}".replace(",", "."))
-
-with col5:
-    card_metrica("Reuniões", f"{total_reunioes:,}".replace(",", "."))
-
-col6, col7, col8 = st.columns(3)
-
-with col6:
-    card_metrica("Taxa de abertura", f"{taxa_abertura:.1f}%")
-
-with col7:
-    card_metrica("Taxa de clique", f"{taxa_clique:.1f}%")
-
-with col8:
-    card_metrica("Taxa de resposta", f"{taxa_resposta:.1f}%")
-
-st.divider()
-
-# -----------------------------
-# Gráficos
-# -----------------------------
-
-aba1, aba2, aba3, aba4 = st.tabs([
-    "Funil",
-    "Distribuições",
-    "Evolução",
-    "Base detalhada"
-])
-
-with aba1:
-    st.subheader("Funil comercial")
-
-    df_funil = pd.DataFrame({
-        "Etapa": ["Enviados", "Abertos", "Cliques", "Respostas", "Reuniões"],
-        "Quantidade": [
-            total_enviados,
-            total_abertos,
-            total_cliques,
-            total_respostas,
-            total_reunioes
-        ]
-    })
-
-    fig_funil = px.bar(
-        df_funil,
-        x="Etapa",
-        y="Quantidade",
-        text="Quantidade",
-        title="Funil de engajamento"
-    )
-
-    fig_funil.update_traces(textposition="outside")
-    fig_funil.update_layout(yaxis_title="", xaxis_title="")
-    st.plotly_chart(fig_funil, use_container_width=True)
-
-with aba2:
-    col_a, col_b = st.columns(2)
-
-    with col_a:
-        if col_status:
-            st.subheader("Status")
-
-            df_status = (
-                df[col_status]
-                .fillna("Sem status")
-                .astype(str)
-                .value_counts()
-                .reset_index()
-            )
-            df_status.columns = ["Status", "Quantidade"]
-
-            fig_status = px.pie(
-                df_status,
-                names="Status",
-                values="Quantidade",
-                title="Distribuição por status"
-            )
-
-            st.plotly_chart(fig_status, use_container_width=True)
-        else:
-            st.info("Não encontrei uma coluna de status na base.")
-
-    with col_b:
-        if col_segmento:
-            st.subheader("Segmentos")
-
-            df_segmento = (
-                df[col_segmento]
-                .fillna("Sem segmento")
-                .astype(str)
-                .value_counts()
-                .reset_index()
-                .head(15)
-            )
-            df_segmento.columns = ["Segmento", "Quantidade"]
-
-            fig_segmento = px.bar(
-                df_segmento,
-                x="Quantidade",
-                y="Segmento",
-                orientation="h",
-                title="Top segmentos"
-            )
-
-            fig_segmento.update_layout(yaxis_title="", xaxis_title="")
-            st.plotly_chart(fig_segmento, use_container_width=True)
-        else:
-            st.info("Não encontrei uma coluna de segmento na base.")
-
-    if col_empresa:
-        st.subheader("Empresas com mais registros")
-
-        df_empresas = (
-            df[col_empresa]
-            .fillna("Sem empresa")
-            .astype(str)
-            .value_counts()
-            .reset_index()
-            .head(20)
+with tab_geral:
+    c1, c2 = st.columns([1.1, .9])
+    with c1:
+        section("Panorama da base", "Um resumo rápido para entender volume, cobertura e avanço comercial.")
+        resumo = pd.DataFrame(
+            [
+                ["Empresas mapeadas", total_empresas],
+                ["Eventos únicos", total_eventos],
+                ["Setores detalhados", total_setores],
+                ["Setores hard", total_setores_hard],
+                ["Empresas desejadas para contato", total_precisas],
+                ["Empresas com contato encontrado", total_encontradas],
+                ["Empresas ainda sem contato", max(total_precisas - total_encontradas, 0)],
+                ["Contatos totais", total_contatos],
+                ["Emails enviados", total_enviados],
+                ["Respostas classificadas", respostas_total],
+                ["Respostas com status útil", respostas_com_status],
+            ],
+            columns=["Métrica", "Valor"],
         )
-        df_empresas.columns = ["Empresa", "Quantidade"]
-
-        fig_empresas = px.bar(
-            df_empresas,
-            x="Empresa",
-            y="Quantidade",
-            title="Top empresas"
+        st.dataframe(resumo, use_container_width=True, hide_index=True, height=420)
+    with c2:
+        fig = go.Figure(
+            go.Indicator(
+                mode="gauge+number",
+                value=coverage * 100,
+                number={"suffix": "%", "valueformat": ".1f"},
+                title={"text": "Cobertura de empresas com contatos"},
+                gauge={
+                    "axis": {"range": [0, 100]},
+                    "bar": {"thickness": 0.24},
+                    "steps": [
+                        {"range": [0, 50], "color": "rgba(239,68,68,.18)"},
+                        {"range": [50, 80], "color": "rgba(245,158,11,.18)"},
+                        {"range": [80, 100], "color": "rgba(34,197,94,.18)"},
+                    ],
+                },
+            )
         )
+        fig.update_layout(height=420, margin=dict(l=20, r=20, t=60, b=20))
+        st.plotly_chart(fig, use_container_width=True)
 
-        fig_empresas.update_layout(xaxis_title="", yaxis_title="")
-        st.plotly_chart(fig_empresas, use_container_width=True)
+    c3, c4 = st.columns(2)
+    with c3:
+        donut_chart(view_tipos, "tipo_evento", "qtd", "Distribuição por tipo de evento")
+    with c4:
+        donut_chart(view_respostas, "estado_resposta", "qtd", "Distribuição dos estados de resposta")
 
-with aba3:
-    st.subheader("Evolução no tempo")
-
-    if col_data:
-        df_tempo = df.copy()
-        df_tempo[col_data] = pd.to_datetime(df_tempo[col_data], errors="coerce")
-        df_tempo = df_tempo.dropna(subset=[col_data])
-
-        if not df_tempo.empty:
-            df_tempo["Data Agrupada"] = df_tempo[col_data].dt.date
-
-            df_evolucao = (
-                df_tempo
-                .groupby("Data Agrupada")
-                .size()
-                .reset_index(name="Quantidade")
-            )
-
-            fig_tempo = px.line(
-                df_evolucao,
-                x="Data Agrupada",
-                y="Quantidade",
-                markers=True,
-                title="Registros por data"
-            )
-
-            fig_tempo.update_layout(xaxis_title="", yaxis_title="")
-            st.plotly_chart(fig_tempo, use_container_width=True)
+with tab_empresas:
+    section("Empresas e setores", "Aqui a leitura boa é separar setor detalhado de setor hard. O hard é a visão limpa para decisão.")
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        bar_chart(view_setores_hard, "qtd", "setor_hard", "Setores hard por quantidade", orientation="h", height=520, top_n=25)
+    with c2:
+        if setores_hard.empty:
+            st.info("Sem setores para exibir.")
         else:
-            st.info("Encontrei uma coluna de data, mas não consegui converter os valores.")
+            fig = px.treemap(setores_hard, path=["setor_hard"], values="qtd", title="Mapa de concentração por setor hard")
+            fig.update_layout(height=520, margin=dict(l=10, r=10, t=55, b=10))
+            st.plotly_chart(fig, use_container_width=True)
+
+    c3, c4 = st.columns([1.15, .85])
+    with c3:
+        bar_chart(setores, "qtd", "setor_dedup", "Top setores detalhados", orientation="h", height=560, top_n=30)
+    with c4:
+        section("Lista de empresas", "Busca rápida por empresa mapeada.")
+        searchable_table(empresas, "empresa", "Buscar empresa", height=480)
+
+with tab_eventos:
+    section("Eventos", "Volume total, tipo de evento e nichos. Bom para enxergar onde sua base está mais concentrada.")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Eventos únicos", format_int(total_eventos))
+    with c2:
+        st.metric("Tipos de evento", format_int(len(tipos_evento)))
+    with c3:
+        st.metric("Nichos/segmentos", format_int(len(nichos)))
+
+    c4, c5 = st.columns([.85, 1.15])
+    with c4:
+        donut_chart(view_tipos, "tipo_evento", "qtd", "Eventos por tipo", height=430)
+    with c5:
+        bar_chart(view_nichos, "qtd", "nicho", "Nichos/segmentos por quantidade", orientation="h", height=430, top_n=25)
+
+    section("Lista de eventos", "Use a busca para encontrar um evento específico.")
+    searchable_table(eventos, "evento", "Buscar evento", height=360)
+
+with tab_contatos:
+    section("Contatos", "Mostra a cobertura das empresas desejadas, contatos encontrados, senioridade, cargos e departamentos.")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Empresas desejadas", format_int(total_precisas))
+    with c2:
+        st.metric("Empresas encontradas", format_int(total_encontradas))
+    with c3:
+        st.metric("Faltantes", format_int(max(total_precisas - total_encontradas, 0)))
+    with c4:
+        st.metric("Contatos totais", format_int(total_contatos))
+
+    c5, c6 = st.columns([1, 1])
+    with c5:
+        donut_chart(senioridades, "senioridade", "qtd", "Contatos por senioridade", height=430)
+    with c6:
+        if departamentos.empty:
+            st.info("Sem departamentos para exibir.")
+        else:
+            dept_count = departamentos.value_counts("departamento").reset_index(name="qtd")
+            bar_chart(dept_count, "qtd", "departamento", "Departamentos identificados", orientation="h", height=430)
+
+    c7, c8 = st.columns([1, 1])
+    with c7:
+        section("Empresas que precisamos")
+        searchable_table(empresas_precisas, "empresa", "Buscar nas empresas desejadas", height=380)
+    with c8:
+        section("Empresas ainda faltantes")
+        if faltantes.empty:
+            st.success("Todas as empresas desejadas aparecem como encontradas. Bonito de ver.")
+        else:
+            searchable_table(faltantes, "empresa", "Buscar nas faltantes", height=380)
+
+    section("Cargos encontrados", "Lista de cargos únicos para apoiar segmentação e abordagem.")
+    searchable_table(cargos, "cargo", "Buscar cargo", height=420)
+
+with tab_envios:
+    section("Envios e respostas", "Exibe volume enviado por dia, acumulado, evolução e leitura dos estados de resposta.")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Emails enviados", format_int(total_enviados))
+    with c2:
+        st.metric("Dias de envio", format_int(len(envios)))
+    with c3:
+        st.metric("Estados de resposta", format_int(len(respostas)))
+    with c4:
+        st.metric("Taxa com status útil", format_pct(taxa_status))
+
+    if not envios.empty:
+        c5, c6 = st.columns([1.15, .85])
+        with c5:
+            fig = px.bar(envios, x="data_label", y="qtd_enviados", text="qtd_enviados", title="Emails enviados por dia")
+            fig.update_traces(textposition="outside", cliponaxis=False)
+            fig.update_layout(height=430, margin=dict(l=10, r=20, t=55, b=20), xaxis_title=None, yaxis_title=None)
+            st.plotly_chart(fig, use_container_width=True)
+        with c6:
+            fig = px.line(envios, x="data_label", y="acumulado", markers=True, title="Acumulado de envios")
+            fig.update_traces(texttemplate="%{y}", textposition="top center")
+            fig.update_layout(height=430, margin=dict(l=10, r=20, t=55, b=20), xaxis_title=None, yaxis_title=None)
+            st.plotly_chart(fig, use_container_width=True)
+
+        envios_view = envios[["data_label", "qtd_enviados", "acumulado", "variacao_abs", "variacao_pct"]].copy()
+        envios_view["variacao_pct"] = envios_view["variacao_pct"].map(format_pct)
+        envios_view = envios_view.rename(
+            columns={
+                "data_label": "Dia",
+                "qtd_enviados": "Enviados",
+                "acumulado": "Acumulado",
+                "variacao_abs": "Variação absoluta",
+                "variacao_pct": "Variação percentual",
+            }
+        )
+        st.dataframe(envios_view, use_container_width=True, hide_index=True)
     else:
-        st.info("Não encontrei uma coluna de data na base.")
+        st.info("Sem dados de envio para exibir.")
 
-with aba4:
-    st.subheader("Base detalhada")
+    c7, c8 = st.columns([1, 1])
+    with c7:
+        donut_chart(view_respostas, "estado_resposta", "qtd", "Estados de resposta", height=430)
+    with c8:
+        bar_chart(view_respostas, "qtd", "estado_resposta", "Quantidade por estado", orientation="h", height=430)
 
-    st.dataframe(
-        df,
-        use_container_width=True,
-        height=500
-    )
-
-    csv_export = df.to_csv(index=False).encode("utf-8-sig")
-
-    st.download_button(
-        label="Baixar base filtrada em CSV",
-        data=csv_export,
-        file_name="base_filtrada_dashboard.csv",
-        mime="text/csv"
-    )
-
-# -----------------------------
-# Diagnóstico das colunas
-# -----------------------------
-
-with st.expander("Diagnóstico das colunas detectadas"):
-    diagnostico = pd.DataFrame({
-        "Campo esperado": [
-            "Empresa",
-            "Nome",
-            "Email",
-            "Status",
-            "Envio",
-            "Resposta",
-            "Campanha",
-            "Segmento",
-            "Evento",
-            "Data"
+with tab_explorar:
+    section("Explorar dados", "Tabelas separadas por bloco. Isso ajuda muito quando alguém pergunta: de onde saiu esse número?")
+    bloco = st.selectbox(
+        "Escolha o bloco",
+        [
+            "Empresas",
+            "Eventos",
+            "Setores detalhados",
+            "Setores hard",
+            "Tipos de evento",
+            "Nichos",
+            "Empresas desejadas",
+            "Empresas encontradas",
+            "Empresas faltantes",
+            "Cargos",
+            "Senioridades",
+            "Departamentos",
+            "Envios",
+            "Respostas",
         ],
-        "Coluna encontrada": [
-            col_empresa,
-            col_nome,
-            col_email,
-            col_status,
-            col_envio,
-            col_resposta,
-            col_campanha,
-            col_segmento,
-            col_evento,
-            col_data
-        ]
-    })
+    )
+    tables = {
+        "Empresas": empresas,
+        "Eventos": eventos,
+        "Setores detalhados": setores,
+        "Setores hard": setores_hard,
+        "Tipos de evento": tipos_evento,
+        "Nichos": nichos,
+        "Empresas desejadas": empresas_precisas,
+        "Empresas encontradas": empresas_encontradas,
+        "Empresas faltantes": faltantes,
+        "Cargos": cargos,
+        "Senioridades": senioridades,
+        "Departamentos": departamentos,
+        "Envios": envios,
+        "Respostas": respostas,
+    }
+    selected_df = tables[bloco]
+    st.dataframe(selected_df, use_container_width=True, hide_index=True, height=520)
+    st.download_button(
+        "Baixar este bloco em CSV",
+        data=selected_df.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"{bloco.lower().replace(' ', '_')}.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
 
-    st.dataframe(diagnostico, use_container_width=True)
+    with st.expander("Ver arquivo bruto"):
+        st.dataframe(data["raw"], use_container_width=True, height=420)
 
-st.caption("Dashboard criado em Streamlit. Ajuste as colunas da base para melhorar as métricas e filtros.")
+st.caption(
+    "Leitura baseada nos blocos do CSV: Prospect Eventos, Eventos, Contatos e Dados. Para análises cruzadas profundas, o ideal é ter depois uma base normalizada empresa x evento x contato x envio."
+)
