@@ -1,0 +1,7 @@
+*.csv
+!dashboard_prospeccao_base.csv
+Lista de Prospects*.xlsx
+dashboard_check*.png
+.streamlit/secrets.toml
+__pycache__/
+*.py[cod]

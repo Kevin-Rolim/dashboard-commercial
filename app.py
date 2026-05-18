@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 import re
 import unicodedata
 from datetime import datetime
@@ -16,10 +17,12 @@ st.set_page_config(
     page_title="Dashboard Comercial de Prospecção",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 ARQUIVOS_PADRAO = [
+    "dashboard_prospeccao_base.csv",
+    "Lista de Prospects - Dados - Dash.csv",
     "base_dashboard_comercial_prospeccao.csv",
     "dados_dashboard_prospects_streamlit_limpo.csv",
     "dados.csv",
@@ -33,8 +36,8 @@ COLUNAS_OFICIAIS = [
     "ano_evento_mapeado",
     "setor_deduplicado_detalhado_da_empresa",
     "empresas_no_setor_deduplicado_detalhado",
-    "setor_consolidado_hard_da_empresa",
-    "empresas_no_setor_consolidado_hard",
+    "setor_consolidado_da_empresa",
+    "empresas_no_setor_consolidado",
     "tipo_publico_do_evento",
     "eventos_por_tipo_publico",
     "nicho_segmento_do_evento",
@@ -61,10 +64,10 @@ ROTULOS = {
     "ano_evento_mapeado": "Ano do evento mapeado",
     "setor_deduplicado_detalhado_da_empresa": "Setor deduplicado detalhado",
     "empresas_no_setor_deduplicado_detalhado": "Empresas no setor detalhado",
-    "setor_consolidado_hard_da_empresa": "Setor consolidado hard",
-    "empresas_no_setor_consolidado_hard": "Empresas no setor hard",
-    "tipo_publico_do_evento": "Tipo de público do evento",
-    "eventos_por_tipo_publico": "Eventos por tipo de público",
+    "setor_consolidado_da_empresa": "Setor consolidado",
+    "empresas_no_setor_consolidado": "Empresas no setor consolidado",
+    "tipo_publico_do_evento": "Tipo do evento",
+    "eventos_por_tipo_publico": "Eventos por tipo",
     "nicho_segmento_do_evento": "Nicho ou segmento do evento",
     "eventos_por_nicho_segmento": "Eventos por nicho ou segmento",
     "empresa_priorizada_para_busca_de_contatos": "Empresa priorizada para busca de contatos",
@@ -89,8 +92,8 @@ MAPA_COLUNAS_ANTIGAS = {
     "ano_evento_prospect": "ano_evento_mapeado",
     "setor_empresa_detalhado": "setor_deduplicado_detalhado_da_empresa",
     "quantidade_empresas_no_setor_detalhado": "empresas_no_setor_deduplicado_detalhado",
-    "setor_empresa_consolidado_hard": "setor_consolidado_hard_da_empresa",
-    "quantidade_empresas_no_setor_consolidado_hard": "empresas_no_setor_consolidado_hard",
+    "setor_empresa_consolidado": "setor_consolidado_da_empresa",
+    "quantidade_empresas_no_setor_consolidado": "empresas_no_setor_consolidado",
     "tipo_publico_evento": "tipo_publico_do_evento",
     "quantidade_eventos_por_tipo_publico": "eventos_por_tipo_publico",
     "nicho_segmento_evento": "nicho_segmento_do_evento",
@@ -111,82 +114,275 @@ MAPA_COLUNAS_ANTIGAS = {
     "quantidade_respostas_por_status": "respostas_por_status",
 }
 
-CSS = """
+PALETAS = {
+    "escuro": {
+        "bg": "#070B14",
+        "bg2": "#0F172A",
+        "panel": "#111827",
+        "panel_soft": "#172033",
+        "line": "#2F3A4D",
+        "text": "#F8FAFC",
+        "muted": "#CBD5E1",
+        "muted2": "#94A3B8",
+        "accent": "#F97316",
+        "badge_bg": "#3B2416",
+        "badge_text": "#FED7AA",
+        "hero_a": "rgba(17,24,39,.98)",
+        "hero_b": "rgba(30,41,59,.96)",
+        "hero_c": "rgba(67,37,22,.92)",
+        "shadow": "rgba(0,0,0,.30)",
+        "tab_active_bg": "#F97316",
+        "tab_active_text": "#111827",
+        "plot_template": "plotly_dark",
+        "grid": "#273244",
+        "hover_bg": "#F8FAFC",
+        "hover_text": "#111827",
+    },
+    "claro": {
+        "bg": "#F4F7FB",
+        "bg2": "#EEF3F8",
+        "panel": "#FFFFFF",
+        "panel_soft": "#F8FAFC",
+        "line": "#D8E0EA",
+        "text": "#111827",
+        "muted": "#475569",
+        "muted2": "#64748B",
+        "accent": "#F97316",
+        "badge_bg": "#FFF7ED",
+        "badge_text": "#9A3412",
+        "hero_a": "rgba(255,255,255,.98)",
+        "hero_b": "rgba(239,246,255,.96)",
+        "hero_c": "rgba(255,247,237,.96)",
+        "shadow": "rgba(15,23,42,.08)",
+        "tab_active_bg": "#111827",
+        "tab_active_text": "#FFFFFF",
+        "plot_template": "plotly_white",
+        "grid": "#E5E7EB",
+        "hover_bg": "#111827",
+        "hover_text": "#FFFFFF",
+    },
+}
+
+st.session_state.setdefault("modo_escuro", True)
+CORES_TEMA = PALETAS["escuro" if st.session_state["modo_escuro"] else "claro"]
+ESCALA_GRAFICO = ["#2563EB", "#14B8A6", "#F97316"]
+CORES_DONUT = ["#2563EB", "#14B8A6", "#F97316", "#DC2626", "#7C3AED", "#64748B", "#0F766E"]
+
+CSS = f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap');
-html, body, [class*="css"] {font-family: 'Inter', sans-serif;}
-.stApp {
-    background:
-        radial-gradient(circle at 8% 2%, rgba(244, 63, 94, 0.20), transparent 28%),
-        radial-gradient(circle at 92% 6%, rgba(249, 115, 22, 0.20), transparent 30%),
-        radial-gradient(circle at 50% 100%, rgba(59, 130, 246, 0.12), transparent 34%),
-        linear-gradient(135deg, #050814 0%, #0B1020 48%, #111827 100%);
-}
-.block-container {padding-top: 1.25rem; padding-bottom: 3rem; max-width: 1500px;}
-[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #111827 0%, #090D18 100%);
-    border-right: 1px solid rgba(255,255,255,.08);
-}
-[data-testid="stSidebar"] * {color: #E5E7EB;}
-.hero {
-    padding: 28px 30px;
-    border-radius: 30px;
-    background: linear-gradient(135deg, rgba(249,115,22,.24), rgba(236,72,153,.13) 42%, rgba(59,130,246,.14));
-    border: 1px solid rgba(255,255,255,.14);
-    box-shadow: 0 26px 80px rgba(0,0,0,.38);
-    margin-bottom: 18px;
-}
-.hero h1 {font-size: 2.35rem; line-height: 1.04; margin: 0 0 8px 0; font-weight: 900; color: #FFFFFF; letter-spacing: -.055em;}
-.hero p {font-size: 1.02rem; color: #D1D5DB; margin: 0; max-width: 1120px;}
-.badge {
-    display: inline-block;
-    padding: 6px 11px;
+:root {{
+    --bg: {CORES_TEMA["bg"]};
+    --bg2: {CORES_TEMA["bg2"]};
+    --panel: {CORES_TEMA["panel"]};
+    --panel-soft: {CORES_TEMA["panel_soft"]};
+    --line: {CORES_TEMA["line"]};
+    --text: {CORES_TEMA["text"]};
+    --muted: {CORES_TEMA["muted"]};
+    --muted2: {CORES_TEMA["muted2"]};
+    --accent: {CORES_TEMA["accent"]};
+    --badge-bg: {CORES_TEMA["badge_bg"]};
+    --badge-text: {CORES_TEMA["badge_text"]};
+    --hero-a: {CORES_TEMA["hero_a"]};
+    --hero-b: {CORES_TEMA["hero_b"]};
+    --hero-c: {CORES_TEMA["hero_c"]};
+    --shadow: {CORES_TEMA["shadow"]};
+    --tab-active-bg: {CORES_TEMA["tab_active_bg"]};
+    --tab-active-text: {CORES_TEMA["tab_active_text"]};
+}}
+
+html, body, [class*="css"] {{
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 16px;
+}}
+
+.stApp {{
+    background: linear-gradient(180deg, var(--bg) 0%, var(--bg2) 100%);
+    color: var(--text);
+}}
+
+[data-testid="stSidebar"], [data-testid="collapsedControl"] {{
+    display: none;
+}}
+
+[data-testid="stHeader"] {{
+    background: transparent;
+}}
+
+.block-container {{
+    padding-top: 1.2rem;
+    padding-bottom: 4rem;
+    max-width: 1720px;
+}}
+
+.hero {{
+    padding: 30px 34px;
+    border-radius: 18px;
+    background: linear-gradient(135deg, var(--hero-a), var(--hero-b) 52%, var(--hero-c));
+    border: 1px solid var(--line);
+    box-shadow: 0 18px 48px var(--shadow);
+    margin-bottom: 20px;
+}}
+
+.hero h1 {{
+    font-size: clamp(2.2rem, 3vw, 3.2rem);
+    line-height: 1.03;
+    margin: 4px 0 10px 0;
+    font-weight: 900;
+    color: var(--text);
+    letter-spacing: 0;
+}}
+
+.hero p {{
+    font-size: 1.08rem;
+    line-height: 1.65;
+    color: var(--muted);
+    margin: 0;
+    max-width: 1180px;
+}}
+
+.badge {{
+    display: inline-flex;
+    align-items: center;
+    padding: 7px 12px;
     border-radius: 999px;
-    background: rgba(255,255,255,.08);
-    color: #FED7AA;
-    border: 1px solid rgba(251,146,60,.28);
-    font-size: .74rem;
+    background: var(--badge-bg);
+    color: var(--badge-text);
+    border: 1px solid var(--accent);
+    font-size: .78rem;
     font-weight: 850;
-    margin: 0 6px 12px 0;
-    letter-spacing: .03em;
-}
-.kpi-card {
-    padding: 18px 18px 16px 18px;
-    border-radius: 24px;
-    background: linear-gradient(180deg, rgba(255,255,255,.085), rgba(255,255,255,.035));
-    border: 1px solid rgba(255,255,255,.11);
-    box-shadow: 0 15px 42px rgba(0,0,0,.24);
-    min-height: 132px;
-}
-.kpi-label {font-size: .73rem; text-transform: uppercase; letter-spacing: .09em; color: #A7B3C7; font-weight: 850;}
-.kpi-value {font-size: 2.08rem; margin-top: 8px; color: #FFFFFF; font-weight: 900; letter-spacing: -.045em;}
-.kpi-help {font-size: .84rem; color: #CBD5E1; margin-top: 7px;}
-.section-title {font-size: 1.22rem; font-weight: 900; color: #F8FAFC; margin: 18px 0 2px 0; letter-spacing: -.025em;}
-.section-subtitle {font-size: .91rem; color: #9CA3AF; margin-bottom: 14px;}
-[data-testid="stMetric"] {
-    background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.03));
-    border: 1px solid rgba(255,255,255,.09);
-    border-radius: 20px;
-    padding: 14px 16px;
-}
-[data-testid="stMetricLabel"] {color: #B6C2D2;}
-[data-testid="stMetricValue"] {color: #FFFFFF; font-weight: 900;}
-.stTabs [data-baseweb="tab-list"] {gap: 8px; margin-top: 8px;}
-.stTabs [data-baseweb="tab"] {
-    height: 46px;
+    margin: 0 8px 10px 0;
+    letter-spacing: .04em;
+}}
+
+.kpi-card, [data-testid="stMetric"] {{
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    box-shadow: 0 12px 32px var(--shadow);
+}}
+
+.kpi-card {{
+    padding: 20px 20px 18px 20px;
+    min-height: 148px;
+}}
+
+.kpi-label {{
+    font-size: .8rem;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    color: var(--muted);
+    font-weight: 850;
+}}
+
+.kpi-value {{
+    font-size: clamp(2.15rem, 2.2vw, 2.75rem);
+    margin-top: 10px;
+    color: var(--text);
+    font-weight: 900;
+    letter-spacing: 0;
+}}
+
+.kpi-help {{
+    font-size: .95rem;
+    line-height: 1.45;
+    color: var(--muted2);
+    margin-top: 8px;
+}}
+
+.section-title {{
+    font-size: 1.45rem;
+    line-height: 1.25;
+    font-weight: 900;
+    color: var(--text);
+    margin: 24px 0 4px 0;
+    letter-spacing: 0;
+}}
+
+.section-subtitle {{
+    font-size: 1rem;
+    color: var(--muted2);
+    margin-bottom: 16px;
+}}
+
+[data-testid="stMetric"] {{
+    padding: 16px 18px;
+}}
+
+[data-testid="stMetricLabel"] {{
+    color: var(--muted);
+    font-size: .94rem;
+}}
+
+[data-testid="stMetricValue"] {{
+    color: var(--text);
+    font-weight: 900;
+    font-size: 2.05rem;
+}}
+
+.stTabs [data-baseweb="tab-list"] {{
+    gap: 8px;
+    margin-top: 10px;
+    margin-bottom: 8px;
+}}
+
+.stTabs [data-baseweb="tab"] {{
+    height: 48px;
     padding: 0 18px;
-    border-radius: 999px;
-    background: rgba(255,255,255,.055);
-    border: 1px solid rgba(255,255,255,.08);
-    font-weight: 750;
-}
-.stTabs [aria-selected="true"] {
-    background: linear-gradient(135deg, rgba(249,115,22,.38), rgba(236,72,153,.25));
-    border: 1px solid rgba(255,255,255,.18);
-}
-[data-testid="stDataFrame"] {border-radius: 18px; overflow: hidden;}
-.small-note {font-size: .82rem; color: #94A3B8;}
-hr {border-color: rgba(255,255,255,.08);}
+    border-radius: 10px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    font-weight: 800;
+    color: var(--text);
+}}
+
+.stTabs [aria-selected="true"] {{
+    background: var(--tab-active-bg);
+    border-color: var(--tab-active-bg);
+    color: var(--tab-active-text);
+}}
+
+[data-testid="stDataFrame"] {{
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+}}
+
+[data-testid="stDataFrame"] div {{
+    font-size: 14px;
+}}
+
+.stTextInput input,
+.stNumberInput input,
+.stSelectbox div[data-baseweb="select"],
+.stMultiSelect div[data-baseweb="select"] {{
+    border-radius: 10px;
+}}
+
+[data-testid="stCheckbox"] label,
+[data-testid="stCheckbox"] p {{
+    color: var(--text) !important;
+    font-weight: 800;
+}}
+
+button[kind="secondary"], .stDownloadButton button {{
+    border-radius: 10px;
+    font-weight: 800;
+}}
+
+.small-note {{
+    font-size: .9rem;
+    color: var(--muted2);
+}}
+
+hr {{
+    border-color: var(--line);
+}}
+
+@media (max-width: 900px) {{
+    .block-container {{padding-left: 1rem; padding-right: 1rem;}}
+    .hero {{padding: 22px;}}
+    .kpi-card {{min-height: 132px;}}
+}}
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -216,16 +412,22 @@ def normalizar_nome_coluna(valor: object) -> str:
 
 
 def para_numero(serie: pd.Series) -> pd.Series:
-    texto = (
-        serie.astype(str)
-        .str.replace("R$", "", regex=False)
-        .str.replace("%", "", regex=False)
-        .str.replace(".", "", regex=False)
-        .str.replace(",", ".", regex=False)
-        .str.replace(r"[^0-9.\-]", "", regex=True)
-        .str.strip()
-    )
-    return pd.to_numeric(texto, errors="coerce").fillna(0)
+    if pd.api.types.is_numeric_dtype(serie):
+        return pd.to_numeric(serie, errors="coerce").fillna(0)
+
+    def normalizar_numero(valor: object) -> str:
+        texto = limpar_texto(valor)
+        texto = texto.replace("R$", "").replace("%", "").strip()
+        texto = re.sub(r"[^0-9,.\-]", "", texto)
+        if "," in texto:
+            return texto.replace(".", "").replace(",", ".")
+        if "." in texto:
+            partes = texto.split(".")
+            tem_milhar = len(partes) > 1 and len(partes[0]) <= 3 and all(len(parte) == 3 for parte in partes[1:])
+            return "".join(partes) if tem_milhar else texto
+        return texto
+
+    return pd.to_numeric(serie.map(normalizar_numero), errors="coerce").fillna(0)
 
 
 def formato_inteiro(valor: float | int | None) -> str:
@@ -311,12 +513,150 @@ def localizar_arquivo_padrao() -> str | None:
     return None
 
 
+def localizar_url_padrao() -> str | None:
+    candidatos = [
+        os.getenv("DASHBOARD_CSV_URL"),
+        os.getenv("DATA_URL"),
+    ]
+    try:
+        candidatos.extend([
+            st.secrets.get("DASHBOARD_CSV_URL"),
+            st.secrets.get("DATA_URL"),
+        ])
+    except Exception:
+        pass
+
+    for candidato in candidatos:
+        url = limpar_texto(candidato)
+        if url.startswith(("https://", "http://")):
+            return url
+    return None
+
+
 def garantir_colunas_oficiais(df: pd.DataFrame) -> pd.DataFrame:
     saida = df.copy()
     for coluna in COLUNAS_OFICIAIS:
         if coluna not in saida.columns:
             saida[coluna] = ""
     return saida[COLUNAS_OFICIAIS]
+
+
+def coluna_texto(df: pd.DataFrame, *candidatas: str) -> pd.Series:
+    for coluna in candidatas:
+        if coluna in df.columns:
+            return df[coluna].map(limpar_texto)
+    return pd.Series([""] * len(df), index=df.index)
+
+
+def nova_base_vazia(indice: pd.Index) -> pd.DataFrame:
+    return pd.DataFrame({coluna: "" for coluna in COLUNAS_OFICIAIS}, index=indice)
+
+
+def bloco_normalizado(df: pd.DataFrame, nome_bloco: str) -> pd.DataFrame:
+    if "bloco" not in df.columns:
+        return df.iloc[0:0].copy()
+    chave = normalizar_chave(nome_bloco)
+    return df[df["bloco"].map(normalizar_chave).eq(chave)].copy()
+
+
+def converter_csv_normalizado(df: pd.DataFrame) -> pd.DataFrame:
+    partes: list[pd.DataFrame] = []
+
+    def adicionar_bloco(nome_bloco: str, mapeamento: dict[str, tuple[str, ...] | str]) -> None:
+        origem = bloco_normalizado(df, nome_bloco)
+        if origem.empty:
+            return
+        destino = nova_base_vazia(origem.index)
+        for coluna_destino, candidatas in mapeamento.items():
+            if isinstance(candidatas, str):
+                candidatas = (candidatas,)
+            destino[coluna_destino] = coluna_texto(origem, *candidatas)
+        partes.append(destino)
+
+    adicionar_bloco(
+        "prospect_eventos",
+        {
+            "empresa_mapeada": "empresa",
+            "evento_mapeado_por_empresa": "evento",
+            "ano_evento_mapeado": "ano",
+        },
+    )
+    adicionar_bloco("resumo_empresas_mapeadas", {"empresa_mapeada": ("empresa", "categoria")})
+    adicionar_bloco("resumo_eventos_mapeados", {"evento_mapeado_por_empresa": ("evento", "categoria")})
+    adicionar_bloco("resumo_anos_eventos", {"ano_evento_mapeado": ("ano", "categoria")})
+    adicionar_bloco(
+        "resumo_setores_detalhados",
+        {
+            "setor_deduplicado_detalhado_da_empresa": ("setor", "categoria"),
+            "empresas_no_setor_deduplicado_detalhado": "quantidade",
+        },
+    )
+    adicionar_bloco(
+        "resumo_setores_consolidados",
+        {
+            "setor_consolidado_da_empresa": ("setor_consolidado", "categoria"),
+            "empresas_no_setor_consolidado": "quantidade",
+        },
+    )
+    adicionar_bloco(
+        "resumo_tipos_evento",
+        {
+            "tipo_publico_do_evento": ("tipo_evento", "categoria"),
+            "eventos_por_tipo_publico": "quantidade",
+        },
+    )
+    adicionar_bloco(
+        "resumo_segmentos_evento",
+        {
+            "nicho_segmento_do_evento": ("segmento_nicho", "categoria"),
+            "eventos_por_nicho_segmento": "quantidade",
+        },
+    )
+    adicionar_bloco("resumo_empresas_priorizadas", {"empresa_priorizada_para_busca_de_contatos": ("empresa_priorizada", "categoria")})
+    adicionar_bloco("resumo_empresas_com_contato", {"empresa_com_contato_encontrado": ("empresa_com_contato", "categoria")})
+    adicionar_bloco("resumo_cargos", {"cargo_do_contato_encontrado": ("cargo", "categoria")})
+    adicionar_bloco(
+        "resumo_senioridades",
+        {
+            "senioridade_do_contato_encontrado": ("senioridade", "categoria"),
+            "contatos_por_senioridade": "quantidade",
+        },
+    )
+    adicionar_bloco("resumo_departamentos", {"departamento_do_contato_encontrado": ("departamento", "categoria")})
+    adicionar_bloco(
+        "resumo_envios_por_dia",
+        {
+            "data_calendario_envio_email": ("data_envio", "categoria"),
+            "dia_mes_envio_email": ("data_envio", "categoria"),
+            "emails_enviados_no_dia": "quantidade",
+        },
+    )
+    adicionar_bloco(
+        "resumo_status_resposta",
+        {
+            "status_da_resposta_do_email": ("estado_resposta", "categoria"),
+            "respostas_por_status": "quantidade",
+        },
+    )
+
+    totais = bloco_normalizado(df, "resumo_totais")
+    if not totais.empty:
+        destino = nova_base_vazia(totais.index)
+        for indice, linha in totais.iterrows():
+            metrica = normalizar_chave(linha.get("metrica"))
+            valor = limpar_texto(linha.get("valor")) or limpar_texto(linha.get("quantidade"))
+            if metrica == "total de empresas priorizadas":
+                destino.loc[indice, "empresas_priorizadas_para_contato_total"] = valor
+            elif metrica == "total de empresas com contato":
+                destino.loc[indice, "empresas_com_contato_encontrado_total"] = valor
+            elif metrica == "total de contatos encontrados":
+                destino.loc[indice, "contatos_encontrados_total"] = valor
+        partes.append(destino)
+
+    if not partes:
+        raise ValueError("O CSV normalizado não tem blocos reconhecíveis para montar o dashboard.")
+
+    return garantir_colunas_oficiais(pd.concat(partes, ignore_index=True))
 
 
 def converter_csv_antigo_com_blocos(file_bytes: bytes | None = None, caminho: str | None = None) -> pd.DataFrame:
@@ -345,8 +685,8 @@ def converter_csv_antigo_com_blocos(file_bytes: bytes | None = None, caminho: st
         "ano_evento_mapeado": col(2),
         "setor_deduplicado_detalhado_da_empresa": col(3),
         "empresas_no_setor_deduplicado_detalhado": col(4),
-        "setor_consolidado_hard_da_empresa": col(5),
-        "empresas_no_setor_consolidado_hard": col(6),
+        "setor_consolidado_da_empresa": col(5),
+        "empresas_no_setor_consolidado": col(6),
         "tipo_publico_do_evento": col(7),
         "eventos_por_tipo_publico": col(8),
         "nicho_segmento_do_evento": col(9),
@@ -378,6 +718,9 @@ def carregar_base(file_bytes: bytes | None, caminho: str | None) -> pd.DataFrame
         tem_colunas_oficiais = len(set(COLUNAS_OFICIAIS).intersection(df.columns)) >= 8
         if tem_colunas_oficiais:
             return garantir_colunas_oficiais(df)
+        tem_base_normalizada = {"bloco", "metrica", "categoria"}.issubset(df.columns) and {"empresa", "evento"}.intersection(df.columns)
+        if tem_base_normalizada:
+            return converter_csv_normalizado(df)
     except Exception:
         pass
 
@@ -390,15 +733,30 @@ def preparar_envios(df: pd.DataFrame, ano_padrao: int) -> pd.DataFrame:
         return envios
 
     texto_data = envios["data_envio_email"].astype(str).str.strip()
-    data_iso = pd.to_datetime(texto_data, errors="coerce")
+    data_iso = pd.to_datetime(texto_data, errors="coerce", format="mixed", dayfirst=True)
     data_dia_mes = pd.to_datetime(texto_data + f"/{ano_padrao}", format="%d/%m/%Y", errors="coerce")
     envios["data_envio"] = data_iso.fillna(data_dia_mes)
     envios = envios.dropna(subset=["data_envio"]).sort_values("data_envio")
     envios["dia_mes"] = envios["data_envio"].dt.strftime("%d/%m")
-    envios["emails_acumulados"] = envios["emails_enviados"].cumsum()
-    envios["crescimento_absoluto"] = envios["emails_enviados"].diff().fillna(0).astype(int)
-    envios["crescimento_percentual"] = envios["emails_enviados"].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0)
+    valores = envios["emails_enviados"].astype(int)
+    usa_acumulado = len(valores) > 1 and valores.is_monotonic_increasing
+    if usa_acumulado:
+        envios["emails_acumulados"] = valores
+        envios["emails_enviados"] = valores.diff().fillna(valores.iloc[0]).clip(lower=0).astype(int)
+    else:
+        envios["emails_enviados"] = valores
+        envios["emails_acumulados"] = valores.cumsum()
+    envios["crescimento_absoluto"] = envios["emails_acumulados"].diff().fillna(0).astype(int)
+    envios["crescimento_percentual"] = envios["emails_acumulados"].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0)
     return envios.reset_index(drop=True)
+
+
+def inferir_ano_padrao(df: pd.DataFrame) -> int:
+    anos_eventos = para_numero(df["ano_evento_mapeado"]) if "ano_evento_mapeado" in df.columns else pd.Series(dtype="float64")
+    anos_eventos = anos_eventos[(anos_eventos >= 2020) & (anos_eventos <= 2035)]
+    if not anos_eventos.empty:
+        return int(anos_eventos.max())
+    return datetime.today().year
 
 
 def kpi_card(titulo: str, valor: str, detalhe: str) -> None:
@@ -420,38 +778,63 @@ def secao(titulo: str, subtitulo: str = "") -> None:
         st.markdown(f"<div class='section-subtitle'>{subtitulo}</div>", unsafe_allow_html=True)
 
 
+def altura_por_linhas(qtd_linhas: int, minimo: int = 420, por_linha: int = 36, extra: int = 150, maximo: int = 820) -> int:
+    return min(max(minimo, extra + qtd_linhas * por_linha), maximo)
+
+
 def preparar_figura(fig: go.Figure, altura: int) -> go.Figure:
     fig.update_layout(
-        template="plotly_dark",
+        template=CORES_TEMA["plot_template"],
         height=altura,
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=10, r=20, t=58, b=20),
-        font=dict(family="Inter", color="#E5E7EB"),
-        title=dict(font=dict(size=18, color="#F8FAFC"), x=0),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        paper_bgcolor=CORES_TEMA["panel"],
+        plot_bgcolor=CORES_TEMA["panel"],
+        margin=dict(l=28, r=46, t=72, b=44),
+        font=dict(family="Inter, Segoe UI, sans-serif", color=CORES_TEMA["text"], size=15),
+        title=dict(font=dict(size=22, color=CORES_TEMA["text"]), x=0, y=.98),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.04,
+            xanchor="right",
+            x=1,
+            font=dict(size=14, color=CORES_TEMA["muted"]),
+        ),
+        hoverlabel=dict(bgcolor=CORES_TEMA["hover_bg"], font=dict(color=CORES_TEMA["hover_text"], size=14)),
     )
-    fig.update_xaxes(showgrid=True, gridcolor="rgba(255,255,255,.08)", zeroline=False)
-    fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,.08)", zeroline=False)
+    fig.update_xaxes(showgrid=True, gridcolor=CORES_TEMA["grid"], zeroline=False, tickfont=dict(size=14), automargin=True)
+    fig.update_yaxes(showgrid=True, gridcolor=CORES_TEMA["grid"], zeroline=False, tickfont=dict(size=14), automargin=True)
     return fig
 
 
-def grafico_barras(df: pd.DataFrame, categoria: str, quantidade: str, titulo: str, key: str, horizontal: bool = True, top_n: int | None = None, altura: int = 440) -> None:
+def grafico_barras(df: pd.DataFrame, categoria: str, quantidade: str, titulo: str, key: str, horizontal: bool = True, top_n: int | None = None, altura: int | None = None) -> None:
     if df.empty:
         st.info("Sem dados para exibir neste bloco.")
         return
 
     base = df.copy().head(top_n) if top_n else df.copy()
+    altura_final = altura or altura_por_linhas(len(base), minimo=430)
+    escala = ESCALA_GRAFICO
     if horizontal:
         base = base.sort_values(quantidade, ascending=True)
-        fig = px.bar(base, x=quantidade, y=categoria, orientation="h", text=quantidade, title=titulo, color=quantidade, color_continuous_scale="Sunsetdark")
+        fig = px.bar(base, x=quantidade, y=categoria, orientation="h", text=quantidade, title=titulo, color=quantidade, color_continuous_scale=escala)
         fig.update_layout(coloraxis_showscale=False, yaxis_title=None, xaxis_title=None)
+        maior_valor = base[quantidade].max() if not base.empty else 0
+        if maior_valor:
+            fig.update_xaxes(range=[0, maior_valor * 1.18])
     else:
-        fig = px.bar(base, x=categoria, y=quantidade, text=quantidade, title=titulo, color=quantidade, color_continuous_scale="Sunsetdark")
+        fig = px.bar(base, x=categoria, y=quantidade, text=quantidade, title=titulo, color=quantidade, color_continuous_scale=escala)
         fig.update_layout(coloraxis_showscale=False, xaxis_title=None, yaxis_title=None)
+        fig.update_xaxes(tickangle=-25)
 
-    fig.update_traces(textposition="outside", cliponaxis=False)
-    st.plotly_chart(preparar_figura(fig, altura), use_container_width=True, key=key)
+    fig.update_traces(
+        texttemplate="%{text:,.0f}",
+        textposition="outside",
+        textfont=dict(size=14, color=CORES_TEMA["text"]),
+        marker_line_width=0,
+        cliponaxis=False,
+        hovertemplate=f"{categoria}: %{{y}}<br>{quantidade}: %{{x:,.0f}}<extra></extra>" if horizontal else f"{categoria}: %{{x}}<br>{quantidade}: %{{y:,.0f}}<extra></extra>",
+    )
+    st.plotly_chart(preparar_figura(fig, altura_final), width="stretch", key=key)
 
 
 def grafico_donut(df: pd.DataFrame, categoria: str, quantidade: str, titulo: str, key: str, altura: int = 390) -> None:
@@ -459,9 +842,25 @@ def grafico_donut(df: pd.DataFrame, categoria: str, quantidade: str, titulo: str
         st.info("Sem dados para exibir neste bloco.")
         return
 
-    fig = px.pie(df, names=categoria, values=quantidade, hole=.62, title=titulo, color_discrete_sequence=px.colors.sequential.Sunsetdark)
-    fig.update_traces(textposition="inside", textinfo="percent+label", marker=dict(line=dict(color="rgba(255,255,255,.14)", width=1)))
-    st.plotly_chart(preparar_figura(fig, altura), use_container_width=True, key=key)
+    total = int(df[quantidade].sum()) if quantidade in df.columns else 0
+    fig = px.pie(df, names=categoria, values=quantidade, hole=.58, title=titulo, color_discrete_sequence=CORES_DONUT)
+    fig.update_traces(
+        textposition="inside",
+        textinfo="percent",
+        textfont=dict(size=16, color="#FFFFFF"),
+        marker=dict(line=dict(color=CORES_TEMA["panel"], width=2)),
+        hovertemplate=f"{categoria}: %{{label}}<br>{quantidade}: %{{value:,.0f}}<br>Participação: %{{percent}}<extra></extra>",
+    )
+    fig.add_annotation(
+        text=f"<b>{formato_inteiro(total)}</b><br><span style='font-size:13px;color:{CORES_TEMA['muted2']}'>total</span>",
+        x=.5,
+        y=.5,
+        showarrow=False,
+        font=dict(size=22, color=CORES_TEMA["text"]),
+    )
+    fig = preparar_figura(fig, altura)
+    fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-.06, xanchor="center", x=.5, font=dict(size=14, color=CORES_TEMA["muted"])))
+    st.plotly_chart(fig, width="stretch", key=key)
 
 
 def tabela_com_busca(df: pd.DataFrame, coluna_busca: str, label: str, key: str, altura: int = 420) -> None:
@@ -474,13 +873,13 @@ def tabela_com_busca(df: pd.DataFrame, coluna_busca: str, label: str, key: str, 
     if termo and coluna_busca in visual.columns:
         visual = visual[visual[coluna_busca].astype(str).str.contains(termo, case=False, na=False)]
 
-    st.dataframe(visual, use_container_width=True, hide_index=True, height=altura)
+    st.dataframe(visual, width="stretch", hide_index=True, height=altura)
     st.download_button(
         "Baixar tabela filtrada em CSV",
         data=visual.to_csv(index=False).encode("utf-8-sig"),
         file_name=f"{key}.csv",
         mime="text/csv",
-        use_container_width=True,
+        width="stretch",
         key=f"download_{key}",
     )
 
@@ -489,22 +888,17 @@ def renomear_para_exibicao(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns={c: ROTULOS.get(c, c) for c in df.columns})
 
 
-st.sidebar.title("Base de dados")
-st.sidebar.caption("Use o CSV tratado no GitHub ou envie manualmente pelo painel abaixo.")
-
-arquivo_enviado = st.sidebar.file_uploader("Enviar CSV", type=["csv"], key="upload_csv")
-ano_padrao = st.sidebar.number_input("Ano usado quando o envio vier só como dia/mês", min_value=2020, max_value=2035, value=datetime.today().year, step=1)
-
 caminho_padrao = localizar_arquivo_padrao()
-bytes_csv = arquivo_enviado.getvalue() if arquivo_enviado else None
-caminho_csv = None if arquivo_enviado else caminho_padrao
+url_padrao = localizar_url_padrao()
+caminho_csv = caminho_padrao or url_padrao
+fonte_base = caminho_padrao or "URL configurada"
 
-if not bytes_csv and not caminho_csv:
-    st.error("Não encontrei o CSV no projeto. Coloque `base_dashboard_comercial_prospeccao.csv` na raiz do GitHub ou envie o arquivo pela lateral.")
+if not caminho_csv:
+    st.error("Não encontrei `dashboard_prospeccao_base.csv`. Coloque o CSV da aba Dados - Dash na raiz do projeto ou configure `DASHBOARD_CSV_URL`.")
     st.stop()
 
 try:
-    base = carregar_base(bytes_csv, caminho_csv)
+    base = carregar_base(None, caminho_csv)
 except Exception as erro:
     st.error(f"Não consegui montar o dashboard com esse arquivo. Erro: {erro}")
     st.stop()
@@ -517,8 +911,8 @@ empresas_eventos = empresas_eventos[(empresas_eventos["empresa_mapeada"] != "") 
 empresas_eventos = empresas_eventos.drop_duplicates().rename(columns=ROTULOS).reset_index(drop=True)
 
 setores_detalhados = tabela_contagem_por_coluna(base, "setor_deduplicado_detalhado_da_empresa", "empresas_no_setor_deduplicado_detalhado", "Setor deduplicado detalhado", "Empresas mapeadas")
-setores_hard = tabela_contagem_por_coluna(base, "setor_consolidado_hard_da_empresa", "empresas_no_setor_consolidado_hard", "Setor consolidado hard", "Empresas mapeadas")
-tipos_evento = tabela_contagem_por_coluna(base, "tipo_publico_do_evento", "eventos_por_tipo_publico", "Tipo de público do evento", "Eventos mapeados")
+setores_consolidados = tabela_contagem_por_coluna(base, "setor_consolidado_da_empresa", "empresas_no_setor_consolidado", "Setor consolidado", "Empresas mapeadas")
+tipos_evento = tabela_contagem_por_coluna(base, "tipo_publico_do_evento", "eventos_por_tipo_publico", "Tipo do evento", "Eventos mapeados")
 nichos_evento = tabela_contagem_por_coluna(base, "nicho_segmento_do_evento", "eventos_por_nicho_segmento", "Nicho ou segmento do evento", "Eventos mapeados")
 empresas_priorizadas = tabela_lista(base, "empresa_priorizada_para_busca_de_contatos", "Empresa priorizada para busca de contatos")
 empresas_com_contato = tabela_lista(base, "empresa_com_contato_encontrado", "Empresa com contato encontrado")
@@ -531,17 +925,18 @@ empresas_sem_contato = empresas_priorizadas[empresas_priorizadas["Empresa priori
 cargos_contatos = tabela_contagem_por_coluna(base, "cargo_do_contato_encontrado", None, "Cargo do contato encontrado", "Contatos mapeados")
 senioridades = tabela_contagem_por_coluna(base, "senioridade_do_contato_encontrado", "contatos_por_senioridade", "Senioridade do contato encontrado", "Contatos mapeados")
 departamentos = tabela_contagem_por_coluna(base, "departamento_do_contato_encontrado", None, "Departamento do contato encontrado", "Contatos mapeados")
+ano_padrao = inferir_ano_padrao(base)
 envios = preparar_envios(base, int(ano_padrao))
 respostas = tabela_contagem_por_coluna(base, "status_da_resposta_do_email", "respostas_por_status", "Status da resposta do email", "Respostas mapeadas")
 
 total_empresas = contar_unicos(base, "empresa_mapeada")
 total_eventos = contar_unicos(base, "evento_mapeado_por_empresa")
 total_setores_detalhados = len(setores_detalhados)
-total_setores_hard = len(setores_hard)
+total_setores_consolidados = len(setores_consolidados)
 total_priorizadas = max(primeiro_numero(base, "empresas_priorizadas_para_contato_total", len(empresas_priorizadas)), len(empresas_priorizadas))
 total_com_contato = max(primeiro_numero(base, "empresas_com_contato_encontrado_total", len(empresas_com_contato)), len(empresas_com_contato))
 total_contatos = max(primeiro_numero(base, "contatos_encontrados_total", int(cargos_contatos["Contatos mapeados"].sum()) if not cargos_contatos.empty else 0), int(cargos_contatos["Contatos mapeados"].sum()) if not cargos_contatos.empty else 0)
-total_enviados = int(envios["emails_enviados"].sum()) if not envios.empty else 0
+total_enviados = int(envios["emails_acumulados"].max()) if not envios.empty else 0
 total_respostas = int(respostas["Respostas mapeadas"].sum()) if not respostas.empty else 0
 sem_resposta = respostas[respostas["Status da resposta do email"].map(normalizar_chave).eq("sem resposta")]
 total_sem_resposta = int(sem_resposta["Respostas mapeadas"].sum()) if not sem_resposta.empty else 0
@@ -563,13 +958,17 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+_, tema_coluna = st.columns([.82, .18])
+with tema_coluna:
+    st.toggle("Modo escuro", key="modo_escuro")
+
 linha1 = st.columns(4)
 with linha1[0]:
     kpi_card("Empresas mapeadas", formato_inteiro(total_empresas), "Empresas únicas identificadas na base")
 with linha1[1]:
     kpi_card("Eventos mapeados", formato_inteiro(total_eventos), "Eventos únicos relacionados às empresas")
 with linha1[2]:
-    kpi_card("Setores hard", formato_inteiro(total_setores_hard), f"{formato_inteiro(total_setores_detalhados)} setores detalhados")
+    kpi_card("Setores", formato_inteiro(total_setores_consolidados), f"{formato_inteiro(total_setores_detalhados)} setores detalhados")
 with linha1[3]:
     kpi_card("Cobertura de contatos", formato_percentual(taxa_cobertura), f"{formato_inteiro(total_com_contato)} de {formato_inteiro(total_priorizadas)} empresas")
 
@@ -579,19 +978,38 @@ with linha2[0]:
 with linha2[1]:
     kpi_card("Cargos únicos", formato_inteiro(len(cargos_contatos)), "Cargos diferentes encontrados")
 with linha2[2]:
-    kpi_card("Emails enviados", formato_inteiro(total_enviados), "Soma dos envios por dia")
+    kpi_card("Emails enviados", formato_inteiro(total_enviados), "Total acumulado informado no Dados - Dash")
 with linha2[3]:
     kpi_card("Respostas úteis", formato_inteiro(respostas_com_status_util), f"Taxa sobre envios: {formato_percentual(taxa_resposta_util)}")
 
-st.sidebar.divider()
-st.sidebar.title("Filtros de visualização")
+with st.expander("Ajustes de visualização", expanded=False):
+    ajuste1, ajuste2 = st.columns([1, 1])
+    with ajuste1:
+        top_n_rankings = st.slider("Itens exibidos nos rankings", min_value=8, max_value=40, value=16, step=1)
+    with ajuste2:
+        tamanho_graficos = st.select_slider("Tamanho dos gráficos", options=["Compacto", "Confortável", "Amplo"], value="Confortável")
 
-filtro_setores = st.sidebar.multiselect("Setor consolidado hard", options=setores_hard["Setor consolidado hard"].tolist(), default=[])
-filtro_tipos_evento = st.sidebar.multiselect("Tipo de público do evento", options=tipos_evento["Tipo de público do evento"].tolist(), default=[])
-filtro_respostas = st.sidebar.multiselect("Status da resposta do email", options=respostas["Status da resposta do email"].tolist(), default=[])
+    filtro1, filtro2, filtro3 = st.columns(3)
+    with filtro1:
+        filtro_setores = st.multiselect("Setor consolidado", options=setores_consolidados["Setor consolidado"].tolist(), default=[])
+    with filtro2:
+        filtro_tipos_evento = st.multiselect("Tipo do evento", options=tipos_evento["Tipo do evento"].tolist(), default=[])
+    with filtro3:
+        filtro_respostas = st.multiselect("Status da resposta do email", options=respostas["Status da resposta do email"].tolist(), default=[])
 
-visao_setores_hard = setores_hard if not filtro_setores else setores_hard[setores_hard["Setor consolidado hard"].isin(filtro_setores)]
-visao_tipos_evento = tipos_evento if not filtro_tipos_evento else tipos_evento[tipos_evento["Tipo de público do evento"].isin(filtro_tipos_evento)]
+multiplicador_altura = {"Compacto": .88, "Confortável": 1.0, "Amplo": 1.18}[tamanho_graficos]
+
+
+def altura(valor: int) -> int:
+    return int(valor * multiplicador_altura)
+
+
+def altura_ranking(df: pd.DataFrame, minimo: int = 430, por_linha: int = 38, extra: int = 150, maximo: int = 860) -> int:
+    return altura(altura_por_linhas(min(top_n_rankings, len(df)), minimo=minimo, por_linha=por_linha, extra=extra, maximo=maximo))
+
+
+visao_setores_consolidados = setores_consolidados if not filtro_setores else setores_consolidados[setores_consolidados["Setor consolidado"].isin(filtro_setores)]
+visao_tipos_evento = tipos_evento if not filtro_tipos_evento else tipos_evento[tipos_evento["Tipo do evento"].isin(filtro_tipos_evento)]
 visao_respostas = respostas if not filtro_respostas else respostas[respostas["Status da resposta do email"].isin(filtro_respostas)]
 
 aba_geral, aba_empresas, aba_eventos, aba_contatos, aba_envios, aba_dados = st.tabs([
@@ -612,7 +1030,7 @@ with aba_geral:
                 ["Empresas mapeadas", total_empresas],
                 ["Eventos mapeados", total_eventos],
                 ["Setores detalhados", total_setores_detalhados],
-                ["Setores consolidados hard", total_setores_hard],
+                ["Setores consolidados", total_setores_consolidados],
                 ["Empresas priorizadas para contato", total_priorizadas],
                 ["Empresas com contato encontrado", total_com_contato],
                 ["Empresas ainda sem contato", max(total_priorizadas - total_com_contato, 0)],
@@ -624,21 +1042,21 @@ with aba_geral:
             ],
             columns=["Indicador comercial", "Resultado"],
         )
-        st.dataframe(resumo, use_container_width=True, hide_index=True, height=430)
+        st.dataframe(resumo, width="stretch", hide_index=True, height=altura(450))
 
     with direita:
         fig = go.Figure(
             go.Indicator(
                 mode="gauge+number",
                 value=taxa_cobertura * 100,
-                number={"suffix": "%", "valueformat": ".1f", "font": {"color": "#FFFFFF", "size": 54}},
-                title={"text": "Cobertura de empresas com contatos", "font": {"color": "#E5E7EB", "size": 18}},
+                number={"suffix": "%", "valueformat": ".1f", "font": {"color": CORES_TEMA["text"], "size": 54}},
+                title={"text": "Cobertura de empresas com contatos", "font": {"color": CORES_TEMA["muted"], "size": 18}},
                 gauge={
-                    "axis": {"range": [0, 100], "tickcolor": "#94A3B8"},
-                    "bar": {"color": "#F97316", "thickness": 0.26},
-                    "bgcolor": "rgba(255,255,255,.04)",
+                    "axis": {"range": [0, 100], "tickcolor": CORES_TEMA["muted2"]},
+                    "bar": {"color": CORES_TEMA["accent"], "thickness": 0.26},
+                    "bgcolor": CORES_TEMA["panel_soft"],
                     "borderwidth": 1,
-                    "bordercolor": "rgba(255,255,255,.12)",
+                    "bordercolor": CORES_TEMA["line"],
                     "steps": [
                         {"range": [0, 50], "color": "rgba(239,68,68,.24)"},
                         {"range": [50, 80], "color": "rgba(245,158,11,.22)"},
@@ -647,33 +1065,33 @@ with aba_geral:
                 },
             )
         )
-        st.plotly_chart(preparar_figura(fig, 430), use_container_width=True, key="gauge_cobertura")
+        st.plotly_chart(preparar_figura(fig, altura(460)), width="stretch", key="gauge_cobertura")
 
     c1, c2 = st.columns(2)
     with c1:
-        grafico_donut(visao_tipos_evento, "Tipo de público do evento", "Eventos mapeados", "Distribuição por tipo de público", "donut_tipo_publico")
+        grafico_donut(visao_tipos_evento, "Tipo do evento", "Eventos mapeados", "Distribuição por tipo do evento", "donut_tipo_publico", altura=altura(470))
     with c2:
-        grafico_donut(visao_respostas, "Status da resposta do email", "Respostas mapeadas", "Distribuição dos status de resposta", "donut_respostas")
+        grafico_donut(visao_respostas, "Status da resposta do email", "Respostas mapeadas", "Distribuição dos status de resposta", "donut_respostas", altura=altura(470))
 
 with aba_empresas:
-    secao("Empresas e setores", "Use o setor hard para leitura executiva. Use o setor detalhado para investigação fina.")
+    secao("Empresas e setores", "Use o setor consolidado para leitura executiva. Use o setor detalhado para investigação fina.")
     c1, c2 = st.columns([1.05, .95])
     with c1:
-        grafico_barras(visao_setores_hard, "Setor consolidado hard", "Empresas mapeadas", "Empresas por setor consolidado hard", "bar_setor_hard", top_n=30, altura=560)
+        grafico_barras(visao_setores_consolidados, "Setor consolidado", "Empresas mapeadas", "Empresas por setor consolidado", "bar_setor_consolidado", top_n=top_n_rankings, altura=altura_ranking(visao_setores_consolidados, minimo=520))
     with c2:
-        if setores_hard.empty:
+        if setores_consolidados.empty:
             st.info("Sem setores para exibir.")
         else:
-            fig = px.treemap(setores_hard, path=["Setor consolidado hard"], values="Empresas mapeadas", title="Concentração visual por setor hard", color="Empresas mapeadas", color_continuous_scale="Sunsetdark")
+            fig = px.treemap(setores_consolidados, path=["Setor consolidado"], values="Empresas mapeadas", title="Concentração visual por setor consolidado", color="Empresas mapeadas", color_continuous_scale="Sunsetdark")
             fig.update_layout(coloraxis_showscale=False)
-            st.plotly_chart(preparar_figura(fig, 560), use_container_width=True, key="treemap_setor_hard")
+            st.plotly_chart(preparar_figura(fig, altura(560)), width="stretch", key="treemap_setor_consolidado")
 
     c3, c4 = st.columns([1.05, .95])
     with c3:
-        grafico_barras(setores_detalhados, "Setor deduplicado detalhado", "Empresas mapeadas", "Top setores detalhados", "bar_setor_detalhado", top_n=35, altura=620)
+        grafico_barras(setores_detalhados, "Setor deduplicado detalhado", "Empresas mapeadas", "Top setores detalhados", "bar_setor_detalhado", top_n=top_n_rankings, altura=altura_ranking(setores_detalhados, minimo=560, maximo=920))
     with c4:
         secao("Empresas mapeadas", "Lista pesquisável das empresas identificadas.")
-        tabela_com_busca(empresas_mapeadas, "Empresa mapeada", "Buscar empresa mapeada", "empresas_mapeadas", altura=510)
+        tabela_com_busca(empresas_mapeadas, "Empresa mapeada", "Buscar empresa mapeada", "empresas_mapeadas", altura=altura(540))
 
 with aba_eventos:
     secao("Eventos", "Leitura dos eventos mapeados, tipos de público e nichos comerciais.")
@@ -684,12 +1102,12 @@ with aba_eventos:
 
     c1, c2 = st.columns([.85, 1.15])
     with c1:
-        grafico_donut(visao_tipos_evento, "Tipo de público do evento", "Eventos mapeados", "Eventos por tipo de público", "eventos_tipo_publico", altura=440)
+        grafico_donut(visao_tipos_evento, "Tipo do evento", "Eventos mapeados", "Eventos por tipo", "eventos_tipo_publico", altura=altura(480))
     with c2:
-        grafico_barras(nichos_evento, "Nicho ou segmento do evento", "Eventos mapeados", "Nichos e segmentos com mais eventos", "bar_nichos", top_n=30, altura=440)
+        grafico_barras(nichos_evento, "Nicho ou segmento do evento", "Eventos mapeados", "Nichos e segmentos com mais eventos", "bar_nichos", top_n=top_n_rankings, altura=altura_ranking(nichos_evento))
 
     secao("Relação empresa x evento", "Tabela útil para investigar quais empresas aparecem relacionadas a quais eventos.")
-    tabela_com_busca(empresas_eventos, "Empresa mapeada", "Buscar por empresa", "empresa_evento", altura=470)
+    tabela_com_busca(empresas_eventos, "Empresa mapeada", "Buscar por empresa", "empresa_evento", altura=altura(520))
 
 with aba_contatos:
     secao("Contatos", "Mostra cobertura das empresas priorizadas, contatos encontrados, senioridade, cargos e departamentos.")
@@ -701,23 +1119,23 @@ with aba_contatos:
 
     c1, c2 = st.columns([.9, 1.1])
     with c1:
-        grafico_donut(senioridades, "Senioridade do contato encontrado", "Contatos mapeados", "Contatos por senioridade", "donut_senioridade", altura=450)
+        grafico_donut(senioridades, "Senioridade do contato encontrado", "Contatos mapeados", "Contatos por senioridade", "donut_senioridade", altura=altura(500))
     with c2:
-        grafico_barras(cargos_contatos, "Cargo do contato encontrado", "Contatos mapeados", "Cargos com maior recorrência", "bar_cargos", top_n=30, altura=450)
+        grafico_barras(cargos_contatos, "Cargo do contato encontrado", "Contatos mapeados", "Cargos com maior recorrência", "bar_cargos", top_n=top_n_rankings, altura=altura_ranking(cargos_contatos))
 
     c3, c4 = st.columns([1, 1])
     with c3:
-        grafico_barras(departamentos, "Departamento do contato encontrado", "Contatos mapeados", "Departamentos mapeados", "bar_departamentos", top_n=25, altura=420)
+        grafico_barras(departamentos, "Departamento do contato encontrado", "Contatos mapeados", "Departamentos mapeados", "bar_departamentos", top_n=top_n_rankings, altura=altura_ranking(departamentos, minimo=430))
     with c4:
-        grafico_barras(empresas_sem_contato.assign(**{"Empresas faltantes": 1}), "Empresa priorizada para busca de contatos", "Empresas faltantes", "Empresas priorizadas ainda sem contato", "bar_empresas_faltantes", top_n=25, altura=420)
+        grafico_barras(empresas_sem_contato.assign(**{"Empresas faltantes": 1}), "Empresa priorizada para busca de contatos", "Empresas faltantes", "Empresas priorizadas ainda sem contato", "bar_empresas_faltantes", top_n=top_n_rankings, altura=altura_ranking(empresas_sem_contato, minimo=430))
 
     c5, c6 = st.columns([1, 1])
     with c5:
         secao("Empresas priorizadas para busca")
-        tabela_com_busca(empresas_priorizadas, "Empresa priorizada para busca de contatos", "Buscar empresa priorizada", "empresas_priorizadas", altura=420)
+        tabela_com_busca(empresas_priorizadas, "Empresa priorizada para busca de contatos", "Buscar empresa priorizada", "empresas_priorizadas", altura=altura(460))
     with c6:
         secao("Empresas com contato encontrado")
-        tabela_com_busca(empresas_com_contato, "Empresa com contato encontrado", "Buscar empresa encontrada", "empresas_com_contato", altura=420)
+        tabela_com_busca(empresas_com_contato, "Empresa com contato encontrado", "Buscar empresa encontrada", "empresas_com_contato", altura=altura(460))
 
 with aba_envios:
     secao("Envios e respostas", "Volume enviado por dia, acumulado de envios, evolução e leitura dos status de resposta.")
@@ -730,35 +1148,35 @@ with aba_envios:
     if not envios.empty:
         c1, c2 = st.columns([1.15, .85])
         with c1:
-            fig = px.bar(envios, x="dia_mes", y="emails_enviados", text="emails_enviados", title="Emails enviados por dia", color="emails_enviados", color_continuous_scale="Sunsetdark")
+            fig = px.bar(envios, x="dia_mes", y="emails_enviados", text="emails_enviados", title="Novos envios registrados por data", color="emails_enviados", color_continuous_scale=ESCALA_GRAFICO)
             fig.update_layout(coloraxis_showscale=False, xaxis_title=None, yaxis_title=None)
-            fig.update_traces(textposition="outside", cliponaxis=False)
-            st.plotly_chart(preparar_figura(fig, 450), use_container_width=True, key="bar_envios_dia")
+            fig.update_traces(textposition="outside", textfont=dict(color=CORES_TEMA["text"]), cliponaxis=False)
+            st.plotly_chart(preparar_figura(fig, altura(470)), width="stretch", key="bar_envios_dia")
         with c2:
             fig = px.line(envios, x="dia_mes", y="emails_acumulados", markers=True, title="Acumulado de emails enviados")
-            fig.update_traces(line=dict(width=4, color="#F97316"), marker=dict(size=9, color="#FB7185"))
+            fig.update_traces(line=dict(width=4, color=CORES_TEMA["accent"]), marker=dict(size=9, color="#14B8A6"))
             fig.update_layout(xaxis_title=None, yaxis_title=None)
-            st.plotly_chart(preparar_figura(fig, 450), use_container_width=True, key="linha_acumulado_envios")
+            st.plotly_chart(preparar_figura(fig, altura(470)), width="stretch", key="linha_acumulado_envios")
 
         tabela_envios = envios[["data_envio", "emails_enviados", "emails_acumulados", "crescimento_absoluto", "crescimento_percentual"]].copy()
         tabela_envios["data_envio"] = tabela_envios["data_envio"].dt.strftime("%d/%m/%Y")
         tabela_envios["crescimento_percentual"] = tabela_envios["crescimento_percentual"].map(formato_percentual)
         tabela_envios = tabela_envios.rename(columns={
             "data_envio": "Data do envio",
-            "emails_enviados": "Emails enviados",
+            "emails_enviados": "Novos envios",
             "emails_acumulados": "Emails acumulados",
             "crescimento_absoluto": "Crescimento absoluto",
             "crescimento_percentual": "Crescimento percentual",
         })
-        st.dataframe(tabela_envios, use_container_width=True, hide_index=True, height=260)
+        st.dataframe(tabela_envios, width="stretch", hide_index=True, height=altura(280))
     else:
         st.info("Sem dados de envio para exibir.")
 
     c3, c4 = st.columns([.9, 1.1])
     with c3:
-        grafico_donut(visao_respostas, "Status da resposta do email", "Respostas mapeadas", "Status de resposta", "donut_status_envio", altura=430)
+        grafico_donut(visao_respostas, "Status da resposta do email", "Respostas mapeadas", "Status de resposta", "donut_status_envio", altura=altura(480))
     with c4:
-        grafico_barras(visao_respostas, "Status da resposta do email", "Respostas mapeadas", "Quantidade por status de resposta", "bar_status_resposta", top_n=25, altura=430)
+        grafico_barras(visao_respostas, "Status da resposta do email", "Respostas mapeadas", "Quantidade por status de resposta", "bar_status_resposta", top_n=top_n_rankings, altura=altura_ranking(visao_respostas, minimo=460))
 
 with aba_dados:
     secao("Base explorável", "Tabelas separadas por bloco para investigar a origem de cada número.")
@@ -766,8 +1184,8 @@ with aba_dados:
         "Empresas mapeadas": empresas_mapeadas,
         "Relação empresa x evento": empresas_eventos,
         "Setores detalhados": setores_detalhados,
-        "Setores consolidados hard": setores_hard,
-        "Tipos de público dos eventos": tipos_evento,
+        "Setores consolidados": setores_consolidados,
+        "Tipos de evento": tipos_evento,
         "Nichos e segmentos dos eventos": nichos_evento,
         "Empresas priorizadas para contatos": empresas_priorizadas,
         "Empresas com contatos encontrados": empresas_com_contato,
@@ -781,14 +1199,14 @@ with aba_dados:
     }
     bloco = st.selectbox("Escolha a visão para explorar", list(opcoes.keys()), key="select_bloco_exploravel")
     tabela = opcoes[bloco]
-    st.dataframe(tabela, use_container_width=True, hide_index=True, height=560)
+    st.dataframe(tabela, width="stretch", hide_index=True, height=altura(590))
     st.download_button(
         "Baixar esta visão em CSV",
         data=tabela.to_csv(index=False).encode("utf-8-sig"),
         file_name=f"{normalizar_nome_coluna(bloco)}.csv",
         mime="text/csv",
-        use_container_width=True,
+        width="stretch",
         key="download_bloco_exploravel",
     )
 
-st.caption("Dashboard montado a partir dos blocos Empresas, Eventos, Contatos e Dados de envio. Para uma etapa futura, o ideal é transformar tudo em tabelas relacionais normalizadas.")
+st.caption(f"Dashboard montado automaticamente a partir de `{fonte_base}`. Os envios do Dados - Dash são tratados como série acumulada quando os valores aparecem em ordem crescente.")
