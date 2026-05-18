@@ -3,14 +3,18 @@ from __future__ import annotations
 import io
 import os
 import re
+import textwrap
 import unicodedata
 from datetime import datetime
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 import numpy as np
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(
@@ -133,7 +137,6 @@ PALETAS = {
         "shadow": "rgba(0,0,0,.30)",
         "tab_active_bg": "#F97316",
         "tab_active_text": "#111827",
-        "plot_template": "plotly_dark",
         "grid": "#273244",
         "hover_bg": "#F8FAFC",
         "hover_text": "#111827",
@@ -156,7 +159,6 @@ PALETAS = {
         "shadow": "rgba(15,23,42,.08)",
         "tab_active_bg": "#111827",
         "tab_active_text": "#FFFFFF",
-        "plot_template": "plotly_white",
         "grid": "#E5E7EB",
         "hover_bg": "#111827",
         "hover_text": "#FFFFFF",
@@ -372,6 +374,50 @@ button[kind="secondary"], .stDownloadButton button {{
 .small-note {{
     font-size: .9rem;
     color: var(--muted2);
+}}
+
+.chart-card {{
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 22px;
+    box-shadow: 0 12px 32px var(--shadow);
+}}
+
+.chart-title {{
+    font-size: 1.2rem;
+    font-weight: 900;
+    color: var(--text);
+    margin-bottom: 16px;
+}}
+
+.gauge-value {{
+    font-size: clamp(2.8rem, 4.5vw, 4.8rem);
+    line-height: 1;
+    font-weight: 900;
+    color: var(--text);
+    margin: 24px 0 18px 0;
+    letter-spacing: 0;
+}}
+
+.gauge-track {{
+    height: 18px;
+    border-radius: 999px;
+    background: var(--panel-soft);
+    border: 1px solid var(--line);
+    overflow: hidden;
+}}
+
+.gauge-fill {{
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #DC2626, #F97316 55%, #14B8A6);
+}}
+
+.gauge-note {{
+    margin-top: 14px;
+    color: var(--muted2);
+    font-size: .95rem;
 }}
 
 hr {{
@@ -782,28 +828,35 @@ def altura_por_linhas(qtd_linhas: int, minimo: int = 420, por_linha: int = 36, e
     return min(max(minimo, extra + qtd_linhas * por_linha), maximo)
 
 
-def preparar_figura(fig: go.Figure, altura: int) -> go.Figure:
-    fig.update_layout(
-        template=CORES_TEMA["plot_template"],
-        height=altura,
-        paper_bgcolor=CORES_TEMA["panel"],
-        plot_bgcolor=CORES_TEMA["panel"],
-        margin=dict(l=28, r=46, t=72, b=44),
-        font=dict(family="Inter, Segoe UI, sans-serif", color=CORES_TEMA["text"], size=15),
-        title=dict(font=dict(size=22, color=CORES_TEMA["text"]), x=0, y=.98),
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.04,
-            xanchor="right",
-            x=1,
-            font=dict(size=14, color=CORES_TEMA["muted"]),
-        ),
-        hoverlabel=dict(bgcolor=CORES_TEMA["hover_bg"], font=dict(color=CORES_TEMA["hover_text"], size=14)),
-    )
-    fig.update_xaxes(showgrid=True, gridcolor=CORES_TEMA["grid"], zeroline=False, tickfont=dict(size=14), automargin=True)
-    fig.update_yaxes(showgrid=True, gridcolor=CORES_TEMA["grid"], zeroline=False, tickfont=dict(size=14), automargin=True)
-    return fig
+def cor_barra(indice: int) -> str:
+    return ESCALA_GRAFICO[indice % len(ESCALA_GRAFICO)]
+
+
+def rotulo_curto(valor: object, limite: int = 42) -> str:
+    texto = limpar_texto(valor)
+    return textwrap.shorten(texto, width=limite, placeholder="...") if len(texto) > limite else texto
+
+
+def configurar_eixo(ax) -> None:
+    ax.set_facecolor(CORES_TEMA["panel"])
+    ax.tick_params(colors=CORES_TEMA["muted"], labelsize=9)
+    ax.grid(axis="x", color=CORES_TEMA["grid"], linewidth=.8, alpha=.9)
+    for borda in ax.spines.values():
+        borda.set_visible(False)
+
+
+def exibir_figura(fig, key: str) -> None:
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format="png", dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    buffer.seek(0)
+    st.image(buffer, width="stretch")
+    plt.close(fig)
+
+
+def figura_base(altura: int, largura: float = 11):
+    altura_pol = max(3.2, altura / 115)
+    fig, ax = plt.subplots(figsize=(largura, altura_pol), facecolor=CORES_TEMA["panel"])
+    return fig, ax
 
 
 def grafico_barras(df: pd.DataFrame, categoria: str, quantidade: str, titulo: str, key: str, horizontal: bool = True, top_n: int | None = None, altura: int | None = None) -> None:
@@ -812,29 +865,45 @@ def grafico_barras(df: pd.DataFrame, categoria: str, quantidade: str, titulo: st
         return
 
     base = df.copy().head(top_n) if top_n else df.copy()
+    base[quantidade] = para_numero(base[quantidade])
+    base = base[base[quantidade] > 0]
+    if base.empty:
+        st.info("Sem dados para exibir neste bloco.")
+        return
+
     altura_final = altura or altura_por_linhas(len(base), minimo=430)
-    escala = ESCALA_GRAFICO
+    fig, ax = figura_base(altura_final)
+    configurar_eixo(ax)
+
     if horizontal:
         base = base.sort_values(quantidade, ascending=True)
-        fig = px.bar(base, x=quantidade, y=categoria, orientation="h", text=quantidade, title=titulo, color=quantidade, color_continuous_scale=escala)
-        fig.update_layout(coloraxis_showscale=False, yaxis_title=None, xaxis_title=None)
-        maior_valor = base[quantidade].max() if not base.empty else 0
-        if maior_valor:
-            fig.update_xaxes(range=[0, maior_valor * 1.18])
+        valores = base[quantidade].to_numpy()
+        labels = [rotulo_curto(v, 48) for v in base[categoria]]
+        barras = ax.barh(labels, valores, color=[cor_barra(i) for i in range(len(base))])
+        maior_valor = max(float(np.nanmax(valores)), 1)
+        ax.set_xlim(0, maior_valor * 1.2)
+        for barra, valor in zip(barras, valores):
+            ax.text(barra.get_width() + maior_valor * .018, barra.get_y() + barra.get_height() / 2, formato_inteiro(valor), va="center", ha="left", color=CORES_TEMA["text"], fontsize=9, fontweight="bold")
     else:
-        fig = px.bar(base, x=categoria, y=quantidade, text=quantidade, title=titulo, color=quantidade, color_continuous_scale=escala)
-        fig.update_layout(coloraxis_showscale=False, xaxis_title=None, yaxis_title=None)
-        fig.update_xaxes(tickangle=-25)
+        labels = [rotulo_curto(v, 18) for v in base[categoria]]
+        valores = base[quantidade].to_numpy()
+        barras = ax.bar(labels, valores, color=[cor_barra(i) for i in range(len(base))])
+        maior_valor = max(float(np.nanmax(valores)), 1)
+        ax.set_ylim(0, maior_valor * 1.22)
+        ax.tick_params(axis="x", rotation=28)
+        for barra, valor in zip(barras, valores):
+            ax.text(barra.get_x() + barra.get_width() / 2, barra.get_height() + maior_valor * .025, formato_inteiro(valor), va="bottom", ha="center", color=CORES_TEMA["text"], fontsize=8, fontweight="bold")
+        ax.grid(axis="y", color=CORES_TEMA["grid"], linewidth=.8, alpha=.9)
 
-    fig.update_traces(
-        texttemplate="%{text:,.0f}",
-        textposition="outside",
-        textfont=dict(size=14, color=CORES_TEMA["text"]),
-        marker_line_width=0,
-        cliponaxis=False,
-        hovertemplate=f"{categoria}: %{{y}}<br>{quantidade}: %{{x:,.0f}}<extra></extra>" if horizontal else f"{categoria}: %{{x}}<br>{quantidade}: %{{y:,.0f}}<extra></extra>",
-    )
-    st.plotly_chart(preparar_figura(fig, altura_final), width="stretch", key=key)
+    ax.set_title(titulo, loc="left", color=CORES_TEMA["text"], fontsize=14, fontweight="bold", pad=18)
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    if horizontal:
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+    else:
+        ax.yaxis.set_major_locator(MaxNLocator(integer=True))
+    fig.tight_layout(pad=1.8)
+    exibir_figura(fig, key)
 
 
 def grafico_donut(df: pd.DataFrame, categoria: str, quantidade: str, titulo: str, key: str, altura: int = 390) -> None:
@@ -842,25 +911,74 @@ def grafico_donut(df: pd.DataFrame, categoria: str, quantidade: str, titulo: str
         st.info("Sem dados para exibir neste bloco.")
         return
 
-    total = int(df[quantidade].sum()) if quantidade in df.columns else 0
-    fig = px.pie(df, names=categoria, values=quantidade, hole=.58, title=titulo, color_discrete_sequence=CORES_DONUT)
-    fig.update_traces(
-        textposition="inside",
-        textinfo="percent",
-        textfont=dict(size=16, color="#FFFFFF"),
-        marker=dict(line=dict(color=CORES_TEMA["panel"], width=2)),
-        hovertemplate=f"{categoria}: %{{label}}<br>{quantidade}: %{{value:,.0f}}<br>Participação: %{{percent}}<extra></extra>",
+    base = df[[categoria, quantidade]].copy()
+    base[quantidade] = para_numero(base[quantidade])
+    base = base[base[quantidade] > 0].sort_values(quantidade, ascending=False)
+    if base.empty:
+        st.info("Sem dados para exibir neste bloco.")
+        return
+
+    if len(base) > 7:
+        principais = base.head(6).copy()
+        outros = pd.DataFrame([{categoria: "Outros", quantidade: base.iloc[6:][quantidade].sum()}])
+        base = pd.concat([principais, outros], ignore_index=True)
+
+    total = int(base[quantidade].sum())
+    fig, ax = figura_base(altura, largura=8.5)
+    ax.set_facecolor(CORES_TEMA["panel"])
+    cores = [CORES_DONUT[i % len(CORES_DONUT)] for i in range(len(base))]
+    labels = [rotulo_curto(v, 28) for v in base[categoria]]
+    valores = base[quantidade].to_numpy()
+    wedges, _ = ax.pie(
+        valores,
+        colors=cores,
+        startangle=90,
+        counterclock=False,
+        wedgeprops={"width": .42, "edgecolor": CORES_TEMA["panel"], "linewidth": 2},
     )
-    fig.add_annotation(
-        text=f"<b>{formato_inteiro(total)}</b><br><span style='font-size:13px;color:{CORES_TEMA['muted2']}'>total</span>",
-        x=.5,
-        y=.5,
-        showarrow=False,
-        font=dict(size=22, color=CORES_TEMA["text"]),
+    ax.text(0, 0, f"{formato_inteiro(total)}\ntotal", ha="center", va="center", color=CORES_TEMA["text"], fontsize=14, fontweight="bold")
+    legenda = [f"{label} ({formato_percentual(valor / total if total else 0)})" for label, valor in zip(labels, valores)]
+    ax.legend(wedges, legenda, loc="center left", bbox_to_anchor=(1.02, .5), frameon=False, labelcolor=CORES_TEMA["muted"], fontsize=8)
+    ax.set_title(titulo, loc="left", color=CORES_TEMA["text"], fontsize=14, fontweight="bold", pad=18)
+    fig.tight_layout(pad=1.8)
+    exibir_figura(fig, key)
+
+
+def grafico_linha(df: pd.DataFrame, eixo_x: str, eixo_y: str, titulo: str, key: str, altura: int = 430) -> None:
+    if df.empty:
+        st.info("Sem dados para exibir neste bloco.")
+        return
+
+    base = df[[eixo_x, eixo_y]].copy()
+    base[eixo_y] = para_numero(base[eixo_y])
+    fig, ax = figura_base(altura)
+    configurar_eixo(ax)
+    x_pos = np.arange(len(base))
+    ax.plot(x_pos, base[eixo_y], color=CORES_TEMA["accent"], linewidth=3, marker="o", markersize=5, markerfacecolor="#14B8A6")
+    ax.fill_between(x_pos, base[eixo_y], color=CORES_TEMA["accent"], alpha=.12)
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels([rotulo_curto(v, 12) for v in base[eixo_x]], rotation=28, ha="right")
+    ax.yaxis.set_major_locator(MaxNLocator(integer=True))
+    ax.set_title(titulo, loc="left", color=CORES_TEMA["text"], fontsize=14, fontweight="bold", pad=18)
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    fig.tight_layout(pad=1.8)
+    exibir_figura(fig, key)
+
+
+def gauge_card(titulo: str, valor: float, detalhe: str) -> None:
+    percentual = max(0, min(float(valor) * 100, 100))
+    st.markdown(
+        f"""
+        <div class="chart-card">
+            <div class="chart-title">{titulo}</div>
+            <div class="gauge-value">{formato_percentual(valor)}</div>
+            <div class="gauge-track"><div class="gauge-fill" style="width:{percentual:.1f}%"></div></div>
+            <div class="gauge-note">{detalhe}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-    fig = preparar_figura(fig, altura)
-    fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-.06, xanchor="center", x=.5, font=dict(size=14, color=CORES_TEMA["muted"])))
-    st.plotly_chart(fig, width="stretch", key=key)
 
 
 def tabela_com_busca(df: pd.DataFrame, coluna_busca: str, label: str, key: str, altura: int = 420) -> None:
@@ -1045,27 +1163,11 @@ with aba_geral:
         st.dataframe(resumo, width="stretch", hide_index=True, height=altura(450))
 
     with direita:
-        fig = go.Figure(
-            go.Indicator(
-                mode="gauge+number",
-                value=taxa_cobertura * 100,
-                number={"suffix": "%", "valueformat": ".1f", "font": {"color": CORES_TEMA["text"], "size": 54}},
-                title={"text": "Cobertura de empresas com contatos", "font": {"color": CORES_TEMA["muted"], "size": 18}},
-                gauge={
-                    "axis": {"range": [0, 100], "tickcolor": CORES_TEMA["muted2"]},
-                    "bar": {"color": CORES_TEMA["accent"], "thickness": 0.26},
-                    "bgcolor": CORES_TEMA["panel_soft"],
-                    "borderwidth": 1,
-                    "bordercolor": CORES_TEMA["line"],
-                    "steps": [
-                        {"range": [0, 50], "color": "rgba(239,68,68,.24)"},
-                        {"range": [50, 80], "color": "rgba(245,158,11,.22)"},
-                        {"range": [80, 100], "color": "rgba(34,197,94,.22)"},
-                    ],
-                },
-            )
+        gauge_card(
+            "Cobertura de empresas com contatos",
+            taxa_cobertura,
+            f"{formato_inteiro(total_com_contato)} de {formato_inteiro(total_priorizadas)} empresas com contato encontrado",
         )
-        st.plotly_chart(preparar_figura(fig, altura(460)), width="stretch", key="gauge_cobertura")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -1082,9 +1184,7 @@ with aba_empresas:
         if setores_consolidados.empty:
             st.info("Sem setores para exibir.")
         else:
-            fig = px.treemap(setores_consolidados, path=["Setor consolidado"], values="Empresas mapeadas", title="Concentração visual por setor consolidado", color="Empresas mapeadas", color_continuous_scale="Sunsetdark")
-            fig.update_layout(coloraxis_showscale=False)
-            st.plotly_chart(preparar_figura(fig, altura(560)), width="stretch", key="treemap_setor_consolidado")
+            grafico_donut(setores_consolidados, "Setor consolidado", "Empresas mapeadas", "Participação por setor consolidado", "donut_setor_consolidado", altura=altura(560))
 
     c3, c4 = st.columns([1.05, .95])
     with c3:
@@ -1148,15 +1248,9 @@ with aba_envios:
     if not envios.empty:
         c1, c2 = st.columns([1.15, .85])
         with c1:
-            fig = px.bar(envios, x="dia_mes", y="emails_enviados", text="emails_enviados", title="Novos envios registrados por data", color="emails_enviados", color_continuous_scale=ESCALA_GRAFICO)
-            fig.update_layout(coloraxis_showscale=False, xaxis_title=None, yaxis_title=None)
-            fig.update_traces(textposition="outside", textfont=dict(color=CORES_TEMA["text"]), cliponaxis=False)
-            st.plotly_chart(preparar_figura(fig, altura(470)), width="stretch", key="bar_envios_dia")
+            grafico_barras(envios, "dia_mes", "emails_enviados", "Novos envios registrados por data", "bar_envios_dia", horizontal=False, altura=altura(470))
         with c2:
-            fig = px.line(envios, x="dia_mes", y="emails_acumulados", markers=True, title="Acumulado de emails enviados")
-            fig.update_traces(line=dict(width=4, color=CORES_TEMA["accent"]), marker=dict(size=9, color="#14B8A6"))
-            fig.update_layout(xaxis_title=None, yaxis_title=None)
-            st.plotly_chart(preparar_figura(fig, altura(470)), width="stretch", key="linha_acumulado_envios")
+            grafico_linha(envios, "dia_mes", "emails_acumulados", "Acumulado de emails enviados", "linha_acumulado_envios", altura=altura(470))
 
         tabela_envios = envios[["data_envio", "emails_enviados", "emails_acumulados", "crescimento_absoluto", "crescimento_percentual"]].copy()
         tabela_envios["data_envio"] = tabela_envios["data_envio"].dt.strftime("%d/%m/%Y")
