@@ -1303,4 +1303,3 @@ with aba_dados:
         key="download_bloco_exploravel",
     )
 
-st.caption(f"Dashboard montado automaticamente a partir de `{fonte_base}`. Os envios do Dados - Dash são tratados como série acumulada quando os valores aparecem em ordem crescente.")
